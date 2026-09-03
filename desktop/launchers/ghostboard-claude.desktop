@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Claude Code
+Comment=The agent at the core of the system — terminal and file access
+Exec=ghost-claude
+Icon=ghostboard-start
+Terminal=false
+Categories=Development;System;
+Keywords=ai;agent;claude;assistant;
+StartupNotify=false

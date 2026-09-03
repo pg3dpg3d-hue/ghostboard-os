@@ -1,0 +1,13 @@
+# Sorties générées — reconstruites par render-theme.py / ghost-theme apply
+build/
+
+# Dépendances tierces récupérées à l'installation (three.js ~750 Ko).
+# Volontairement hors dépôt : version épinglée + somme de contrôle dans
+# boot-animation/fetch-vendor.sh, donc l'installation reste reproductible.
+boot-animation/vendor/
+
+# Palette injectée dans la page de l'animation : générée depuis brand/palette.toml
+boot-animation/palette.js
+
+*.pyc
+__pycache__/

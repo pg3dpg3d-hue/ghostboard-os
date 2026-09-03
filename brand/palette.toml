@@ -1,0 +1,111 @@
+# ============================================================================
+#  GHOSTBOARD OS — PALETTE : SOURCE DE VÉRITÉ UNIQUE
+# ============================================================================
+#  Ce fichier est le SEUL endroit où une couleur, une police ou une métrique
+#  d'interface est écrite à la main. Tout le reste du système (GTK, xfwm4,
+#  panneau, terminal, fond d'écran, menu démarrer, animation de boot) est
+#  RE-GÉNÉRÉ à partir d'ici par `theme/render-theme.py`.
+#
+#  Changer un hex ci-dessous puis lancer :
+#      sudo ghost-theme apply
+#  suffit à re-thémer l'intégralité de l'OS.
+#
+#  Ne PAS écrire de couleur en dur ailleurs. Si tu en trouves une, c'est un bug.
+# ============================================================================
+
+[meta]
+name        = "GHOSTBOARD"
+os_name     = "GHOSTBOARD OS"
+slogan      = "CUSTOM HARDWARE. READY TO EXPLORE."
+theme_id    = "GhostboardSpectral"   # nom du thème GTK / xfwm4 généré
+
+# ----------------------------------------------------------------------------
+#  COULEURS
+#  Doctrine : fond quasi noir, UNE seule couleur d'accent (violet spectral).
+#  `input` n'est pas une seconde couleur d'accent : c'est un marqueur
+#  sémantique — ce que TAPE l'utilisateur, et ce qui ÉCHOUE. Rien d'autre.
+# ----------------------------------------------------------------------------
+[color]
+bg          = "#08070C"   # fond du bureau, fond des fenêtres
+panel       = "#14111C"   # barre des tâches, menu démarrer, surfaces élevées
+separator   = "#251F35"   # bordures, séparateurs, contours de champs
+accent      = "#A855F7"   # état actif : ce que fait la machine
+input       = "#FF4D8D"   # ce que tape l'utilisateur, et les erreurs
+text        = "#D6D2E0"   # texte principal
+text_dim    = "#6E6880"   # texte secondaire, libellés, placeholders
+
+# ----------------------------------------------------------------------------
+#  TRANSLUCIDITÉ (effet "mica" Windows 11, version GHOSTBOARD)
+#  Opacité des surfaces flottantes. 1.0 = opaque (repli si pas de compositeur).
+# ----------------------------------------------------------------------------
+[mica]
+taskbar_alpha    = 0.86
+startmenu_alpha  = 0.94
+popup_alpha      = 0.96
+
+# ----------------------------------------------------------------------------
+#  POLICES
+#  Martian Mono  : UNIQUEMENT logotype et titres de fenêtre. Jamais de corps.
+#  IBM Plex Mono : interface et terminal. 15 px plancher sur la dalle 4".
+# ----------------------------------------------------------------------------
+[font]
+display        = "Martian Mono"
+ui             = "IBM Plex Mono"
+ui_size_px     = 15       # plancher de lisibilité sur 800x480
+title_size_px  = 15
+term_size_px   = 15
+mono           = "IBM Plex Mono"
+
+# ----------------------------------------------------------------------------
+#  GÉOMÉTRIE — calée sur la dalle 800x480. C'est la contrainte n°1.
+#  Une barre de 40 px sur 480 px de haut, c'est déjà 8 % de l'écran.
+# ----------------------------------------------------------------------------
+[layout]
+screen_w        = 800
+screen_h        = 480
+taskbar_h       = 34      # hauteur barre des tâches flottante
+taskbar_margin  = 4       # marge sous la barre (effet flottant)
+taskbar_radius  = 10      # coins arrondis Windows 11
+window_radius   = 8
+startmenu_w     = 620     # menu démarrer flottant (ne remplit pas l'écran)
+startmenu_h     = 400
+icon_size       = 22      # icônes de la barre des tâches
+pinned_cols     = 5       # grille d'apps épinglées
+
+# ----------------------------------------------------------------------------
+#  ANIMATION DE BOOT — le SEUL moment spectaculaire de l'OS.
+#  Durées en millisecondes. Au-delà de ~1600 ms on mange le budget de boot.
+# ----------------------------------------------------------------------------
+[boot]
+enabled          = true
+duration_ms      = 1400   # cible : ~1,4 s
+particle_count   = 20000  # plafonné au nombre de pixels du logotype rasterisé
+converge_ms      = 950    # nuage -> logotype
+hold_ms          = 250    # tenue nette
+fadeout_ms       = 200    # sortie, puis destruction du contexte WebGL
+tagline          = true   # afficher le slogan en fin d'animation
+timeout_ms       = 4000   # garde-fou : au-delà, on tue et on ouvre la session
+
+# ----------------------------------------------------------------------------
+#  TERMINAL — 16 couleurs ANSI.
+#  Le terminal affiche de la DONNÉE (git diff, ls, grep) : il lui faut ses 16
+#  couleurs sous peine d'être inutilisable. Elles sont donc désaturées et
+#  tirées vers la palette pour ne pas concurrencer l'accent.
+# ----------------------------------------------------------------------------
+[terminal]
+black         = "#14111C"
+red           = "#FF4D8D"
+green         = "#5FD7A4"
+yellow        = "#D9B25F"
+blue          = "#7C6BD1"
+magenta       = "#A855F7"
+cyan          = "#61C6D4"
+white         = "#D6D2E0"
+bright_black  = "#6E6880"
+bright_red    = "#FF7AA8"
+bright_green  = "#87E8C0"
+bright_yellow = "#EBCB84"
+bright_blue   = "#9E90E8"
+bright_magenta= "#C68CFA"
+bright_cyan   = "#8ADCE7"
+bright_white  = "#FFFFFF"

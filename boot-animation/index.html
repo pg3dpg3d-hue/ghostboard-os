@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GHOSTBOARD</title>
+<!--
+  GHOSTBOARD OS — animation d'allumage.
+
+  C'est le SEUL moment spectaculaire de l'OS. Il dure ~1,4 s, puis le contexte
+  WebGL est explicitement détruit : après ça, plus une seule boucle de rendu ne
+  tourne sur la machine. Le reste du système n'a aucune animation.
+
+  Repli, dans l'ordre :
+    1. prefers-reduced-motion         -> logotype statique
+    2. WebGL indisponible ou en échec -> logotype statique
+    3. dépassement du garde-fou       -> le lanceur tue la fenêtre
+  Dans les trois cas la session s'ouvre normalement.
+-->
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: #000; cursor: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* Repli statique et slogan : DOM, pas WebGL. Coût nul. */
+  #fallback {
+    position: fixed; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    font-family: "Martian Mono", "IBM Plex Mono", monospace;
+  }
+  #fallback.on { display: flex; }
+  #fallback .wordmark {
+    font-size: 40px; font-weight: 600; letter-spacing: 10px;
+  }
+  #tagline {
+    position: fixed; left: 0; right: 0; text-align: center;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px; letter-spacing: 4.5px;
+    opacity: 0; pointer-events: none;
+  }
+  #tagline.on { opacity: 1; transition: opacity 220ms linear; }
+</style>
+
+<div id="stage"></div>
+<div id="fallback"><div class="wordmark">GHOSTBOARD</div></div>
+<div id="tagline">CUSTOM HARDWARE. READY TO EXPLORE.</div>
+
+<!-- Palette injectée par le thème (généré depuis brand/palette.toml).
+     Chargé en script classique : pas de fetch(), qui est bloqué sur file://. -->
+<script src="palette.js"></script>
+<script type="module" src="boot.js"></script>
+<script>
+  // Si le module ES échoue (WebGL absent, fichier manquant, erreur de parse),
+  // on n'a pas le droit de bloquer l'ouverture de session : on montre le
+  // logotype statique et on laisse le lanceur reprendre la main.
+  window.addEventListener('error', function onFail() {
+    var t = (window.GHOSTBOARD_THEME || {});
+    if (!window.__ghostboardStarted) {
+      document.getElementById('fallback').classList.add('on');
+      document.getElementById('tagline').classList.add('on');
+    }
+  });
+</script>

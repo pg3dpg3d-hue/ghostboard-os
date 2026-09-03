@@ -1,0 +1,78 @@
+# GHOSTBOARD OS — menu démarrer (Whisker Menu).
+#
+# Structure Windows 11 : fenêtre flottante, recherche EN HAUT, grille d'apps
+# épinglées en dessous. La recherche est le chemin principal — au clavier, on
+# tape trois lettres et on valide ; la grille est là pour la souris.
+#
+# Dimensions calées sur la dalle : 620x400 sur un écran de 800x480 laisse voir
+# le bureau autour, ce qui donne le côté « flottant » plutôt que plein écran.
+favorites=ghostboard-terminal.desktop,ghostboard-claude.desktop,ghostboard-bruce.desktop,ghostboard-browser.desktop,ghostboard-settings.desktop,ghostboard-status.desktop
+recent=
+
+button-title=
+button-icon=ghostboard-start
+button-single-row=false
+show-button-title=false
+show-button-icon=true
+
+# Recherche en haut (false = position par défaut, en haut)
+position-search-alternate=false
+# Catégories à gauche, commandes en bas
+position-categories-alternate=false
+position-commands-alternate=true
+position-profile-alternate=false
+
+# Vue en grille d'icônes = la grille d'apps épinglées de Windows 11
+view-as-icons=true
+menu-width=620
+menu-height=400
+menu-opacity=100
+item-icon-size=3
+category-icon-size=1
+hover-switch-category=false
+stay-on-focus-out=false
+
+# On démarre toujours sur les favoris : c'est l'écran d'accueil du menu.
+default-category=0
+display-recent-default=false
+favorites-in-recent=false
+remember-category=false
+recent-items-max=0
+
+# Pas de descriptions : sur 620 px de large elles poussent les noms hors champ.
+launcher-show-name=true
+launcher-show-description=false
+launcher-show-tooltip=true
+search-actions=4
+
+# Commandes du bas : les trois qui servent vraiment sur un deck portable.
+command-settings=xfce4-settings-manager
+show-command-settings=true
+command-lockscreen=xflock4
+show-command-lockscreen=true
+command-logout=xfce4-session-logout
+show-command-logout=true
+command-menueditor=menulibre
+show-command-menueditor=false
+command-profile=mugshot
+show-command-profile=false
+command-switchuser=
+show-command-switchuser=false
+
+[actions]
+count=3
+[actions/action0]
+name=Man Pages
+pattern=#
+command=xfce4-terminal -e "man %s"
+regex=false
+[actions/action1]
+name=Web Search
+pattern=?
+command=ghost-browser "https://duckduckgo.com/?q=%u"
+regex=false
+[actions/action2]
+name=Run in terminal
+pattern=!
+command=xfce4-terminal --hold -e "%s"
+regex=false

@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GHOSTBOARD OS — barre des tâches.
+  Structure Windows 11 : une seule barre, flottante, centrée, coins arrondis.
+
+  Comment le « flottant » est obtenu :
+    position="p=0;x=400;y=459"  p=0 = position libre ; x,y sont le CENTRE de
+                                la barre. 400 = milieu de 800 px.
+                                459 = 480 - 4 (marge) - 34/2 (demi-hauteur).
+    length="88"                 704 px de large sur 800 : la barre ne touche
+                                jamais les bords, c'est ce qui la fait flotter.
+    background-style="1" + rgba effet mica ; les coins arrondis viennent du
+                                border-radius sur #XfcePanelWindow (gtk.css).
+
+  Changer la hauteur ou la marge : le faire dans brand/palette.toml
+  ([layout] taskbar_h / taskbar_margin / taskbar_radius) et relancer
+  `ghost-theme apply`, qui recalcule ce fichier ET le CSS ensemble.
+-->
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <property name="dark-mode" type="bool" value="true"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=0;x=400;y=459"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="34"/>
+      <property name="length" type="uint" value="88"/>
+      <property name="length-adjust" type="bool" value="false"/>
+      <property name="mode" type="uint" value="0"/>
+      <property name="nrows" type="uint" value="1"/>
+      <property name="icon-size" type="uint" value="22"/>
+      <property name="autohide-behavior" type="uint" value="0"/>
+      <property name="disable-struts" type="bool" value="false"/>
+      <property name="span-monitors" type="bool" value="false"/>
+      <!-- Fond en couleur RGBA : c'est la translucidité « mica ». -->
+      <property name="background-style" type="uint" value="1"/>
+      <property name="background-rgba" type="array">
+        <value type="double" value="0.0784"/>
+        <value type="double" value="0.0667"/>
+        <value type="double" value="0.1098"/>
+        <value type="double" value="0.86"/>
+      </property>
+      <property name="enter-opacity" type="uint" value="100"/>
+      <property name="leave-opacity" type="uint" value="100"/>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="1"/>
+        <value type="int" value="2"/>
+        <value type="int" value="3"/>
+        <value type="int" value="4"/>
+        <value type="int" value="5"/>
+        <value type="int" value="6"/>
+      </property>
+    </property>
+  </property>
+
+  <property name="plugins" type="empty">
+    <!-- 1. Bouton démarrer : logo GHOSTBOARD -->
+    <property name="plugin-1" type="string" value="whiskermenu">
+      <property name="button-icon" type="string" value="ghostboard-start"/>
+      <property name="button-title" type="string" value=""/>
+      <property name="show-button-title" type="bool" value="false"/>
+      <property name="show-button-icon" type="bool" value="true"/>
+    </property>
+    <!-- 2. Filet de séparation -->
+    <property name="plugin-2" type="string" value="separator">
+      <property name="style" type="uint" value="1"/>
+      <property name="expand" type="bool" value="false"/>
+    </property>
+    <!-- 3. Fenêtres ouvertes -->
+    <property name="plugin-3" type="string" value="tasklist">
+      <property name="grouping" type="uint" value="1"/>
+      <property name="show-labels" type="bool" value="true"/>
+      <property name="show-handle" type="bool" value="false"/>
+      <property name="flat-buttons" type="bool" value="true"/>
+      <property name="sort-order" type="uint" value="0"/>
+      <property name="window-scrolling" type="bool" value="false"/>
+      <property name="include-all-workspaces" type="bool" value="false"/>
+      <!-- 140 px : assez pour lire un titre, assez court pour en tenir 4
+           sur une barre de 704 px. -->
+      <property name="max-button-length" type="int" value="140"/>
+    </property>
+    <!-- 4. Ressort : pousse zone de notification et horloge à droite -->
+    <property name="plugin-4" type="string" value="separator">
+      <property name="style" type="uint" value="0"/>
+      <property name="expand" type="bool" value="true"/>
+    </property>
+    <!-- 5. Zone de notification -->
+    <property name="plugin-5" type="string" value="systray">
+      <property name="size-max" type="uint" value="20"/>
+      <property name="square-icons" type="bool" value="true"/>
+      <property name="symbolic-icons" type="bool" value="true"/>
+      <property name="show-frame" type="bool" value="false"/>
+      <property name="menu-is-primary" type="bool" value="false"/>
+    </property>
+    <!-- 6. Horloge : de la donnée -> monospace, format 24 h -->
+    <property name="plugin-6" type="string" value="clock">
+      <property name="mode" type="uint" value="2"/>
+      <property name="digital-layout" type="uint" value="3"/>
+      <property name="digital-time-format" type="string" value="%H:%M"/>
+      <property name="digital-date-format" type="string" value="%d/%m"/>
+      <property name="tooltip-format" type="string" value="%A %d %B %Y — %H:%M"/>
+      <property name="show-frame" type="bool" value="false"/>
+    </property>
+  </property>
+</channel>

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=System status
+Comment=Network, AI reachability, memory, boot time
+Exec=xfce4-terminal -T "GHOSTBOARD status" --hold -e ghost-status
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=status;network;offline;benchmark;
+StartupNotify=false

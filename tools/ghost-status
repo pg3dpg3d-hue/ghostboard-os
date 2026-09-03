@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  GHOSTBOARD OS — état du système
+# ============================================================================
+#  C'est la surface du MODE DÉGRADÉ. Pas de démon, pas de sonde en tâche de
+#  fond, pas d'icône qui clignote : rien ne tourne pour rien sur ce deck.
+#  L'état est calculé au moment où on le demande, et seulement là.
+# ============================================================================
+set -uo pipefail
+SHARE="${GHOSTBOARD_SHARE:-/usr/share/ghostboard}"
+[[ -f "$SHARE/palette.sh" ]] && . "$SHARE/palette.sh"
+
+c() { [[ -t 1 ]] || { printf '%s' "$2"; return; }
+      local h="${1#\#}"
+      printf '\033[38;2;%d;%d;%dm%s\033[0m' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}" "$2"; }
+ok()    { c "${GB_ACCENT:-#A855F7}" "$1"; }
+bad()   { c "${GB_INPUT:-#FF4D8D}" "$1"; }
+faint() { c "${GB_TEXT_DIM:-#6E6880}" "$1"; }
+row()   { printf '  %-22s %s\n' "$1" "$2"; }
+
+echo
+echo "$(ok "  ${GB_OS_NAME:-GHOSTBOARD OS}")  $(faint "${GB_SLOGAN:-}")"
+echo "$(faint '  ────────────────────────────────────────────────')"
+
+# ---- réseau ---------------------------------------------------------------
+link="$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1);exit}}')"
+if [[ -n "$link" ]]; then
+  addr="$(ip -4 -o addr show "$link" 2>/dev/null | awk '{print $4}' | head -1)"
+  row "Network" "$(ok "$link") $(faint "${addr:-no address}")"
+else
+  row "Network" "$(bad 'no route')"
+fi
+
+api_code="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' \
+            https://api.anthropic.com/v1/models 2>/dev/null || echo 000)"
+case "$api_code" in
+  200|401|403) row "Anthropic API" "$(ok 'reachable')  $(faint "HTTP $api_code")" ;;
+  000)         row "Anthropic API" "$(bad 'unreachable — offline mode')" ;;
+  *)           row "Anthropic API" "$(bad "HTTP $api_code")" ;;
+esac
+command -v claude >/dev/null && row "Claude Code" "$(ok "$(claude --version 2>/dev/null | head -1)")" \
+                             || row "Claude Code" "$(bad 'not installed')"
+
+# ---- mémoire et charge ----------------------------------------------------
+read -r _ total used free _ <<<"$(free -m | awk '/^Mem:/{print}')"
+pct=$(( used * 100 / total ))
+mem="$(printf '%s MB / %s MB (%s%%)' "$used" "$total" "$pct")"
+# Cible : < 900 Mo au repos, bureau chargé.
+if [[ "$used" -lt 900 ]]; then row "Memory" "$(ok "$mem")  $(faint '< 900 MB target')"
+else                           row "Memory" "$(bad "$mem")  $(faint 'over 900 MB target')"; fi
+row "Load" "$(faint "$(cut -d' ' -f1-3 /proc/loadavg)")"
+
+# ---- démarrage ------------------------------------------------------------
+if command -v systemd-analyze >/dev/null 2>&1; then
+  boot="$(systemd-analyze 2>/dev/null | head -1 | sed 's/^Startup finished in //')"
+  [[ -n "$boot" ]] && row "Last boot" "$(faint "$boot")"
+fi
+
+# ---- stockage -------------------------------------------------------------
+row "Disk /" "$(faint "$(df -h / | awk 'NR==2{print $3" / "$2" ("$5" used)"}')")"
+nvme="$(lsblk -dno NAME,ROTA 2>/dev/null | awk '$2==0{print $1;exit}')"
+[[ -n "$nvme" ]] && row "Boot device" "$(faint "/dev/$nvme (SSD/NVMe)")"
+
+# ---- périphériques --------------------------------------------------------
+boards="$(ghost-bruce list 2>/dev/null | grep -c '^  /dev/' || true)"
+if [[ "${boards:-0}" -gt 0 ]]; then
+  row "Bruce boards" "$(ok "$boards connected")  $(faint 'ghost-bruce list')"
+else
+  row "Bruce boards" "$(faint 'none connected')"
+fi
+
+# ---- écran ----------------------------------------------------------------
+if [[ -n "${DISPLAY:-}" ]] && command -v xdpyinfo >/dev/null 2>&1; then
+  row "Display" "$(faint "$(xdpyinfo | awk '/dimensions:/{print $2}') on $DISPLAY")"
+fi
+echo

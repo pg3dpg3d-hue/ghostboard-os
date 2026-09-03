@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""
+ghost-bruce — pont entre GHOSTBOARD OS et les cartes ESP32 sous firmware Bruce.
+
+    ghost-bruce list                      cartes détectées sur le port USB
+    ghost-bruce info                      détail de la carte sélectionnée
+    ghost-bruce console                   console série interactive (quitter : Ctrl+])
+    ghost-bruce send "help"               envoie une commande, affiche la réponse
+    ghost-bruce webui                     démarre la WebUI de la carte et l'ouvre
+
+Options communes :
+    -d/--device /dev/ttyACM0    force le port (sinon : détection automatique)
+    -b/--baud 115200            débit série
+
+Détection : parcours de /sys/class/tty, remontée jusqu'au périphérique USB
+parent pour lire idVendor/idProduct/product/manufacturer. Aucune dépendance
+n'est requise pour `list` ; `console` et `send` utilisent pyserial s'il est
+présent, sinon picocom.
+
+Les couleurs viennent de la palette du système :
+    accent (violet)  = ce que fait la machine / ce que dit la carte
+    input  (rose)    = ce que tu tapes, et les erreurs
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PALETTE_PATH = Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard")) / "palette.json"
+
+# Racine sysfs des ports série. Surchargeable pour les tests : la détection
+# doit pouvoir être vérifiée sans avoir six cartes ESP32 sous la main.
+SYSFS_TTY = Path(os.environ.get("GHOSTBOARD_SYSFS_TTY", "/sys/class/tty"))
+
+# ---------------------------------------------------------------------------
+#  Identification des cartes
+#  Les puces USB-série ci-dessous couvrent l'essentiel du parc ESP32 sur
+#  lequel Bruce tourne. La liste est indicative : une carte inconnue est
+#  quand même listée, simplement sans nom commercial.
+# ---------------------------------------------------------------------------
+USB_CHIPS = {
+    ("10c4", "ea60"): "Silicon Labs CP210x",
+    ("1a86", "7523"): "QinHeng CH340",
+    ("1a86", "55d4"): "QinHeng CH9102",
+    ("1a86", "55d3"): "QinHeng CH9102F",
+    ("0403", "6001"): "FTDI FT232R",
+    ("0403", "6015"): "FTDI FT231X",
+    ("303a", "1001"): "Espressif USB CDC/JTAG natif",
+    ("303a", "0002"): "Espressif ESP32-S2",
+    ("303a", "4001"): "Espressif ESP32-S3",
+}
+
+# Indices de modèle. Le firmware Bruce cible surtout ces familles.
+BOARD_HINTS = [
+    (re.compile(r"m5stick", re.I), "M5Stick (M5Stack)"),
+    (re.compile(r"m5stack|stickc", re.I), "M5Stack"),
+    (re.compile(r"t-?embed|lilygo|t-?display", re.I), "LilyGO T-Embed / T-Display"),
+    (re.compile(r"cardputer", re.I), "M5Cardputer"),
+    (re.compile(r"esp32-?s3", re.I), "ESP32-S3"),
+    (re.compile(r"esp32-?s2", re.I), "ESP32-S2"),
+    (re.compile(r"esp32-?c3", re.I), "ESP32-C3"),
+    (re.compile(r"esp32", re.I), "ESP32"),
+]
+
+
+# ---------------------------------------------------------------------------
+#  Couleurs — issues de la palette du système
+# ---------------------------------------------------------------------------
+class Ink:
+    def __init__(self) -> None:
+        self.on = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+        accent, inp, dim, text = "#A855F7", "#FF4D8D", "#6E6880", "#D6D2E0"
+        try:
+            pal = json.loads(PALETTE_PATH.read_text())["color"]
+            accent, inp = pal["accent"], pal["input"]
+            dim, text = pal["text_dim"], pal["text"]
+        except Exception:
+            pass  # palette absente (dépôt non installé) : on garde les valeurs de repli
+        self.accent = self._fg(accent)
+        self.input = self._fg(inp)
+        self.dim = self._fg(dim)
+        self.text = self._fg(text)
+        self.reset = "\033[0m" if self.on else ""
+
+    def _fg(self, hexcolor: str) -> str:
+        if not self.on:
+            return ""
+        h = hexcolor.lstrip("#")
+        return f"\033[38;2;{int(h[0:2],16)};{int(h[2:4],16)};{int(h[4:6],16)}m"
+
+    def machine(self, s: str) -> str:  return f"{self.accent}{s}{self.reset}"
+    def user(self, s: str) -> str:     return f"{self.input}{s}{self.reset}"
+    def faint(self, s: str) -> str:    return f"{self.dim}{s}{self.reset}"
+    def body(self, s: str) -> str:     return f"{self.text}{s}{self.reset}"
+
+
+INK = Ink()
+
+
+def die(msg: str, code: int = 1) -> "typing.NoReturn":  # noqa: F821
+    print(INK.user(f"ghost-bruce: {msg}"), file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------------------
+#  Détection
+# ---------------------------------------------------------------------------
+def _read(path: Path) -> str:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
+def discover() -> list[dict]:
+    """Ports série USB, avec ce qu'on peut apprendre du parent USB.
+
+    On remonte l'arborescence sysfs depuis /sys/class/tty/<nom>/device jusqu'à
+    trouver un nœud portant idVendor : c'est le périphérique USB réel.
+    """
+    found: list[dict] = []
+    for node in sorted(SYSFS_TTY.glob("tty*")):
+        name = node.name
+        if not (name.startswith("ttyACM") or name.startswith("ttyUSB")):
+            continue
+        dev = node / "device"
+        if not dev.exists():
+            continue
+
+        usb = dev.resolve()
+        for _ in range(8):  # profondeur suffisante pour un hub interposé
+            if (usb / "idVendor").exists():
+                break
+            if usb.parent == usb:
+                break
+            usb = usb.parent
+
+        vid = _read(usb / "idVendor").lower()
+        pid = _read(usb / "idProduct").lower()
+        product = _read(usb / "product")
+        manufacturer = _read(usb / "manufacturer")
+        serial = _read(usb / "serial")
+
+        blob = " ".join((product, manufacturer))
+        board = next((label for rx, label in BOARD_HINTS if rx.search(blob)), "")
+        found.append({
+            "device": f"/dev/{name}",
+            "vid": vid, "pid": pid,
+            "chip": USB_CHIPS.get((vid, pid), ""),
+            "product": product, "manufacturer": manufacturer, "serial": serial,
+            "board": board,
+            "writable": os.access(f"/dev/{name}", os.R_OK | os.W_OK),
+            "present": Path(f"/dev/{name}").exists(),
+        })
+    return found
+
+
+def pick(devices: list[dict], requested: str | None) -> dict:
+    if requested:
+        for d in devices:
+            if d["device"] == requested:
+                return d
+        # Le port existe peut-être sans être un USB-série reconnu : on l'accepte.
+        if Path(requested).exists():
+            return {"device": requested, "vid": "", "pid": "", "chip": "",
+                    "product": "", "manufacturer": "", "serial": "", "board": "",
+                    "writable": os.access(requested, os.R_OK | os.W_OK)}
+        die(f"port introuvable : {requested}")
+    if not devices:
+        die("aucune carte détectée. Branche la carte en USB, puis :\n"
+            "  ghost-bruce list\n"
+            "Si le port existe mais n'est pas listé, passe-le avec -d /dev/ttyXXX.")
+    if len(devices) > 1:
+        print(INK.faint(f"{len(devices)} cartes détectées, "
+                        f"choix de {devices[0]['device']} "
+                        f"(utilise -d pour en désigner une autre)"), file=sys.stderr)
+    return devices[0]
+
+
+def check_access(dev: dict) -> None:
+    if dev["writable"]:
+        return
+    die(f"{dev['device']} n'est pas accessible en lecture/écriture.\n"
+        f"  Ajoute ton compte au groupe dialout, puis reconnecte-toi :\n"
+        f"    sudo usermod -aG dialout $USER\n"
+        f"  (l'installateur GHOSTBOARD le fait déjà ; il faut une nouvelle session)")
+
+
+# ---------------------------------------------------------------------------
+#  Commandes
+# ---------------------------------------------------------------------------
+def cmd_list(args) -> int:
+    devices = discover()
+    if not devices:
+        print(INK.faint("Aucune carte série USB détectée."))
+        print(INK.faint("Branche une carte ESP32 sous Bruce, puis relance."))
+        return 1
+    print(INK.machine(f"{len(devices)} carte(s) détectée(s)"))
+    for d in devices:
+        label = d["board"] or d["product"] or "carte inconnue"
+        print(f"\n  {INK.body(d['device'])}  {INK.machine(label)}")
+        if d["chip"]:
+            print(INK.faint(f"    pont série   {d['chip']}  [{d['vid']}:{d['pid']}]"))
+        if d["manufacturer"] or d["product"]:
+            print(INK.faint(f"    usb          {d['manufacturer']} / {d['product']}".rstrip(" /")))
+        if d["serial"]:
+            print(INK.faint(f"    n° de série  {d['serial']}"))
+        if not d["writable"]:
+            print(INK.user("    accès        REFUSÉ — ajoute ton compte au groupe dialout"))
+    return 0
+
+
+def cmd_info(args) -> int:
+    d = pick(discover(), args.device)
+    print(json.dumps(d, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _open_serial(dev: str, baud: int):
+    try:
+        import serial  # pyserial
+    except ImportError:
+        die("pyserial est absent.\n"
+            "  sudo apt install python3-serial\n"
+            "  (ou utilise `ghost-bruce console` qui sait retomber sur picocom)")
+    try:
+        return serial.Serial(dev, baud, timeout=0.05, write_timeout=2)
+    except Exception as exc:  # serial.SerialException et consorts
+        die(f"ouverture de {dev} impossible : {exc}")
+
+
+def cmd_send(args) -> int:
+    d = pick(discover(), args.device)
+    check_access(d)
+    ser = _open_serial(d["device"], args.baud)
+    try:
+        # Purge : une carte qui vient d'être branchée a souvent du bruit de boot
+        # dans son tampon, qu'on ne veut pas confondre avec la réponse.
+        time.sleep(0.15)
+        ser.reset_input_buffer()
+        payload = (args.command + args.newline).encode("utf-8", "replace")
+        ser.write(payload)
+        ser.flush()
+        print(INK.user(f"> {args.command}"))
+
+        deadline = time.time() + args.timeout
+        buf = bytearray()
+        last = time.time()
+        while time.time() < deadline:
+            chunk = ser.read(4096)
+            if chunk:
+                buf += chunk
+                last = time.time()
+            elif buf and time.time() - last > args.quiet:
+                break  # la carte s'est tue : réponse considérée complète
+            else:
+                time.sleep(0.02)
+        text = buf.decode("utf-8", "replace")
+        if not text.strip():
+            print(INK.faint("(aucune réponse — la carte est peut-être hors du mode console)"))
+            return 2
+        for line in text.splitlines():
+            print(INK.machine(line))
+        return 0
+    finally:
+        ser.close()
+
+
+def cmd_console(args) -> int:
+    d = pick(discover(), args.device)
+    check_access(d)
+    try:
+        import serial  # noqa: F401
+        return _console_pyserial(d["device"], args.baud)
+    except ImportError:
+        return _console_picocom(d["device"], args.baud)
+
+
+def _console_picocom(dev: str, baud: int) -> int:
+    exe = shutil.which("picocom")
+    if not exe:
+        die("ni pyserial ni picocom ne sont installés.\n"
+            "  sudo apt install python3-serial picocom")
+    print(INK.faint(f"picocom sur {dev} à {baud} bauds — quitter : Ctrl+A puis Ctrl+X"))
+    return subprocess.call([exe, "-b", str(baud), dev])
+
+
+def _console_pyserial(dev: str, baud: int) -> int:
+    """Console série avec les codes couleur de la marque.
+
+    Sortie de la carte en accent, saisie en couleur d'entrée : on voit d'un
+    coup d'œil qui parle. C'est la même convention que partout dans l'OS.
+    """
+    import select
+    import termios
+    import tty
+    import serial
+
+    try:
+        ser = serial.Serial(dev, baud, timeout=0)
+    except Exception as exc:
+        die(f"ouverture de {dev} impossible : {exc}")
+
+    print(INK.machine(f"─ ghost-bruce ─ {dev} @ {baud} bauds"))
+    print(INK.faint("  quitter : Ctrl+]   —   la sortie de la carte est en violet\n"))
+
+    stdin_fd = sys.stdin.fileno()
+    interactive = sys.stdin.isatty()
+    saved = termios.tcgetattr(stdin_fd) if interactive else None
+    if interactive:
+        tty.setraw(stdin_fd)
+    try:
+        sys.stdout.write(INK.accent)
+        sys.stdout.flush()
+        while True:
+            ready, _, _ = select.select([ser.fileno(), stdin_fd], [], [], 0.2)
+            if ser.fileno() in ready:
+                data = ser.read(4096)
+                if data:
+                    sys.stdout.write(INK.accent + data.decode("utf-8", "replace"))
+                    sys.stdout.flush()
+            if stdin_fd in ready:
+                ch = os.read(stdin_fd, 1024)
+                if not ch or b"\x1d" in ch:  # Ctrl+]
+                    break
+                ser.write(ch)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if interactive:
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved)
+        sys.stdout.write(INK.reset + "\n")
+        sys.stdout.flush()
+        ser.close()
+    print(INK.faint("console fermée"))
+    return 0
+
+
+def cmd_webui(args) -> int:
+    """Démarre la WebUI de Bruce et l'ouvre dans le navigateur.
+
+    La commande série exacte et l'adresse dépendent de la version du firmware
+    Bruce et de son mode réseau (point d'accès ou client Wi-Fi). Les deux sont
+    donc réglables : --command et --url. Par défaut on suppose le mode point
+    d'accès, où la carte se présente en 192.168.4.1.
+    """
+    d = pick(discover(), args.device)
+    check_access(d)
+
+    if not args.no_serial:
+        ser = _open_serial(d["device"], args.baud)
+        try:
+            time.sleep(0.15)
+            ser.reset_input_buffer()
+            ser.write((args.command + "\r\n").encode())
+            ser.flush()
+            print(INK.user(f"> {args.command}"))
+            time.sleep(args.wait)
+            out = ser.read(8192).decode("utf-8", "replace")
+            for line in out.splitlines():
+                print(INK.machine(line))
+            # Si la carte annonce son adresse, elle prime sur celle par défaut.
+            found = re.search(r"(https?://[\w.:-]+|\b\d{1,3}(?:\.\d{1,3}){3}\b)", out)
+            if found and not args.url_given:
+                addr = found.group(1)
+                args.url = addr if addr.startswith("http") else f"http://{addr}"
+                print(INK.faint(f"adresse annoncée par la carte : {args.url}"))
+        finally:
+            ser.close()
+
+    print(INK.machine(f"ouverture de {args.url}"))
+    browser = next((b for b in ("x-www-browser", "chromium", "firefox-esr", "firefox", "xdg-open")
+                    if shutil.which(b)), None)
+    if not browser:
+        print(INK.faint(f"aucun navigateur trouvé — ouvre {args.url} à la main"))
+        return 1
+    if not os.environ.get("DISPLAY"):
+        print(INK.faint(f"pas de session graphique — ouvre {args.url} depuis le bureau"))
+        return 1
+    subprocess.Popen([browser, args.url],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="ghost-bruce",
+        description="Pont GHOSTBOARD OS <-> cartes ESP32 sous firmware Bruce",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__.split("Détection :")[0].split("\n", 2)[2])
+    ap.add_argument("-d", "--device", help="port série (défaut : détection automatique)")
+    ap.add_argument("-b", "--baud", type=int, default=115200, help="débit (défaut 115200)")
+    sub = ap.add_subparsers(dest="cmd")
+
+    sub.add_parser("list", help="lister les cartes détectées").set_defaults(fn=cmd_list)
+    sub.add_parser("info", help="détail de la carte sélectionnée").set_defaults(fn=cmd_info)
+    sub.add_parser("console", help="console série interactive").set_defaults(fn=cmd_console)
+
+    p_send = sub.add_parser("send", help="envoyer une commande et lire la réponse")
+    p_send.add_argument("command")
+    p_send.add_argument("--timeout", type=float, default=3.0,
+                        help="attente maximale de la réponse, en secondes")
+    p_send.add_argument("--quiet", type=float, default=0.4,
+                        help="silence considéré comme fin de réponse, en secondes")
+    p_send.add_argument("--newline", default="\r\n", help="fin de ligne envoyée")
+    p_send.set_defaults(fn=cmd_send)
+
+    p_web = sub.add_parser("webui", help="démarrer la WebUI de la carte et l'ouvrir")
+    p_web.add_argument("--command", default="webui",
+                       help="commande série démarrant la WebUI (dépend du firmware)")
+    p_web.add_argument("--url", default="http://192.168.4.1",
+                       help="adresse de la WebUI (mode point d'accès par défaut)")
+    p_web.add_argument("--wait", type=float, default=1.5,
+                       help="attente après la commande, en secondes")
+    p_web.add_argument("--no-serial", action="store_true",
+                       help="ne rien envoyer, ouvrir directement l'adresse")
+    p_web.set_defaults(fn=cmd_webui)
+
+    args = ap.parse_args()
+    if not getattr(args, "cmd", None):
+        ap.print_help()
+        return 0
+    args.url_given = any(a == "--url" for a in sys.argv)
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        print()
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

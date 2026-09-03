@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+"""
+ghost-bench — mesure les cibles de performance de GHOSTBOARD OS.
+
+    ghost-bench                 mesure tout et affiche le tableau
+    ghost-bench --json          sortie JSON
+    ghost-bench --markdown FILE écrit/met à jour la section chiffrée de BENCHMARKS.md
+    ghost-bench --mark-ready    horodate « bureau prêt » (appelé au démarrage de session)
+
+Cibles (fixées dans le cahier des charges, pas négociables) :
+    boot jusqu'au bureau utilisable   < 20 s
+    RAM au repos, bureau chargé       < 900 Mo
+    aucune boucle GPU après le boot
+    NVMe réellement exploité
+
+Chaque mesure dit d'où vient son chiffre. Une mesure impossible est signalée
+« indisponible » — jamais remplacée par une estimation.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "ghostboard"
+SESSION_START = RUNTIME / "session-start"
+DESKTOP_READY = RUNTIME / "desktop-ready"
+
+TARGETS = {
+    "boot_to_desktop_s": ("Boot to usable desktop", 20.0, "s", "<"),
+    "idle_ram_mb": ("RAM at rest (desktop loaded)", 900.0, "MB", "<"),
+    "idle_cpu_pct": ("CPU at rest", 3.0, "%", "<"),
+    "app_launch_ms": ("Terminal launch", 700.0, "ms", "<"),
+    "nvme_read_mbs": ("NVMe sequential read", 500.0, "MB/s", ">"),
+}
+
+
+def sh(cmd: list[str], timeout: int = 30) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout).stdout
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+def uptime_now() -> float:
+    return float(Path("/proc/uptime").read_text().split()[0])
+
+
+# ---------------------------------------------------------------------------
+#  Mesures
+# ---------------------------------------------------------------------------
+def measure_boot() -> dict:
+    """Deux chiffres distincts, souvent confondus :
+      - systemd : jusqu'à graphical.target (le système est prêt)
+      - bureau  : jusqu'à ce que le panneau XFCE soit affiché (utilisable)
+    C'est le second qui compte pour l'utilisateur, et c'est la cible < 20 s.
+    """
+    out = {"source": "systemd-analyze + horodatage de session"}
+    txt = sh(["systemd-analyze"])
+    if txt:
+        out["systemd_line"] = txt.splitlines()[0].strip()
+        for key, label in (("firmware", "firmware"), ("loader", "loader"),
+                           ("kernel", "kernel"), ("initrd", "initrd"),
+                           ("userspace", "userspace")):
+            m = re.search(rf"([\d.]+)(m?s) \({label}\)", txt)
+            if m:
+                v = float(m.group(1))
+                out[f"{key}_s"] = round(v / 1000 if m.group(2) == "ms" else v, 3)
+        m = re.search(r"=\s*([\d.]+)(m?s)", txt)
+        if m:
+            out["systemd_total_s"] = round(
+                float(m.group(1)) / 1000 if m.group(2) == "ms" else float(m.group(1)), 3)
+
+    if DESKTOP_READY.exists():
+        try:
+            out["boot_to_desktop_s"] = round(float(DESKTOP_READY.read_text().strip()), 3)
+        except ValueError:
+            pass
+    if SESSION_START.exists() and "boot_to_desktop_s" in out:
+        try:
+            start = float(SESSION_START.read_text().strip())
+            out["session_to_desktop_s"] = round(out["boot_to_desktop_s"] - start, 3)
+        except ValueError:
+            pass
+    if "boot_to_desktop_s" not in out:
+        out["note"] = ("bureau non horodaté sur ce démarrage — se reconnecter une "
+                       "fois pour que ghost-bench --mark-ready s'exécute")
+    return out
+
+
+def measure_memory() -> dict:
+    info = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        k, _, v = line.partition(":")
+        info[k] = int(v.split()[0])  # kio
+    total = info["MemTotal"] / 1024
+    available = info["MemAvailable"] / 1024
+    # « RAM au repos » = ce qui n'est pas récupérable. Le cache ne compte pas :
+    # il est rendu à la demande, l'inclure gonflerait le chiffre sans raison.
+    used = total - available
+    return {
+        "source": "/proc/meminfo — utilisé = MemTotal - MemAvailable (le cache ne compte pas)",
+        "total_mb": round(total),
+        "idle_ram_mb": round(used),
+        "available_mb": round(available),
+        "swap_total_mb": round(info.get("SwapTotal", 0) / 1024),
+        "swap_used_mb": round((info.get("SwapTotal", 0) - info.get("SwapFree", 0)) / 1024),
+    }
+
+
+def measure_cpu(seconds: float = 4.0) -> dict:
+    """CPU au repos. C'est le test qui prouve qu'aucun service ne tourne pour
+    rien — et qu'aucune boucle GPU n'a survécu à l'animation de boot."""
+    def snapshot() -> tuple[int, int]:
+        parts = Path("/proc/stat").read_text().split("\n")[0].split()[1:]
+        vals = [int(x) for x in parts]
+        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+        return sum(vals), idle
+
+    t0, i0 = snapshot()
+    time.sleep(seconds)
+    t1, i1 = snapshot()
+    dt, di = t1 - t0, i1 - i0
+    busy = 100.0 * (1 - di / dt) if dt else 0.0
+
+    top = []
+    ps = sh(["ps", "-eo", "pcpu,comm", "--sort=-pcpu"])
+    for line in ps.splitlines()[1:6]:
+        cpu, _, name = line.strip().partition(" ")
+        try:
+            if float(cpu) > 0.3:
+                top.append({"process": name.strip(), "cpu_pct": float(cpu)})
+        except ValueError:
+            pass
+    return {"source": f"/proc/stat sur {seconds:g} s",
+            "idle_cpu_pct": round(busy, 2), "top_processes": top}
+
+
+def measure_gpu_loops() -> dict:
+    """Vérifie qu'aucun processus ne garde le GPU ouvert après le boot.
+
+    L'animation d'allumage doit avoir détruit son contexte WebGL. S'il reste
+    un client /dev/dri (hors compositeur), c'est une régression.
+    """
+    out = {"source": "fuser sur /dev/dri/*"}
+    dri = Path("/dev/dri")
+    if not dri.exists():
+        out["note"] = "pas de nœud /dev/dri (pas de GPU exposé)"
+        out["gpu_clients"] = []
+        return out
+    clients = []
+    for node in sorted(dri.glob("card*")) + sorted(dri.glob("renderD*")):
+        pids = sh(["fuser", str(node)], timeout=10).split()
+        for pid in pids:
+            pid = pid.strip().rstrip("cemrft")
+            if not pid.isdigit():
+                continue
+            comm = Path(f"/proc/{pid}/comm")
+            if comm.exists():
+                clients.append({"pid": int(pid), "process": comm.read_text().strip(),
+                                "node": node.name})
+    out["gpu_clients"] = clients
+    # xfwm4 est le compositeur : il a le droit d'être là, c'est lui qui rend
+    # la translucidité de la barre possible. Chromium, non.
+    expected = {"xfwm4", "Xorg", "X", "xfdesktop"}
+    out["unexpected"] = [c for c in clients if c["process"] not in expected]
+    return out
+
+
+def measure_services() -> dict:
+    blame = sh(["systemd-analyze", "blame"], timeout=45)
+    entries = []
+    for line in blame.splitlines()[:20]:
+        line = line.strip()
+        m = re.match(r"^([\d.]+)(m?s)\s+(\S+)$", line)
+        if m:
+            v = float(m.group(1))
+            entries.append({"unit": m.group(3),
+                            "seconds": round(v / 1000 if m.group(2) == "ms" else v, 3)})
+    running = sh(["systemctl", "list-units", "--type=service", "--state=running",
+                  "--no-legend", "--no-pager"])
+    units = [l.split()[0] for l in running.splitlines() if l.strip()]
+    failed = sh(["systemctl", "list-units", "--state=failed", "--no-legend", "--no-pager"])
+    return {"source": "systemd-analyze blame / systemctl list-units",
+            "slowest_units": entries[:12],
+            "running_services": len(units),
+            "running_list": units,
+            "failed": [l.split()[0] for l in failed.splitlines() if l.strip()]}
+
+
+def measure_storage(size_mb: int = 256) -> dict:
+    """Lecture séquentielle NVMe en O_DIRECT : on mesure le disque, pas le
+    cache de pages. Un chiffre obtenu sans O_DIRECT ne mesure que la RAM."""
+    out = {"source": f"dd iflag=direct, {size_mb} Mio, contourne le cache de pages"}
+    root = Path(os.environ.get("GHOSTBOARD_BENCH_DIR", str(Path.home())))
+    tmp = root / f".ghost-bench-{os.getpid()}.bin"
+    try:
+        free_mb = shutil.disk_usage(root).free / (1024 * 1024)
+        if free_mb < size_mb * 2:
+            out["note"] = f"espace libre insuffisant ({free_mb:.0f} Mio)"
+            return out
+        subprocess.run(["dd", "if=/dev/urandom", f"of={tmp}", "bs=1M",
+                        f"count={size_mb}", "conv=fsync"],
+                       capture_output=True, timeout=180, check=True)
+        subprocess.run(["sync"], capture_output=True, timeout=30)
+        t0 = time.monotonic()
+        subprocess.run(["dd", f"if={tmp}", "of=/dev/null", "bs=1M",
+                        "iflag=direct"], capture_output=True, timeout=180, check=True)
+        dt = time.monotonic() - t0
+        if dt > 0:
+            out["nvme_read_mbs"] = round(size_mb / dt, 1)
+            out["duration_s"] = round(dt, 3)
+    except (subprocess.SubprocessError, OSError) as exc:
+        out["note"] = f"mesure impossible : {exc}"
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    dev = sh(["lsblk", "-dno", "NAME,ROTA,MODEL,SIZE"])
+    for line in dev.splitlines():
+        f = line.split(None, 3)
+        if len(f) >= 2 and f[1] == "0":
+            out["device"] = {"name": f[0], "model": f[3].strip() if len(f) > 3 else "",
+                             "rotational": False}
+            break
+    fstab_opts = sh(["findmnt", "-no", "OPTIONS", "/"]).strip()
+    if fstab_opts:
+        out["root_mount_options"] = fstab_opts
+        out["noatime"] = "noatime" in fstab_opts
+    return out
+
+
+def measure_app_launch(runs: int = 3) -> dict:
+    """Temps entre le lancement du terminal et l'apparition de sa fenêtre.
+    Sans session graphique, la mesure est déclarée indisponible plutôt
+    qu'approximée."""
+    out = {"source": "xdotool search --sync, moyenne de plusieurs lancements"}
+    if not os.environ.get("DISPLAY") or not shutil.which("xdotool"):
+        out["note"] = "pas de session graphique (ou xdotool absent)"
+        return out
+    if not shutil.which("xfce4-terminal"):
+        out["note"] = "xfce4-terminal absent"
+        return out
+    times = []
+    for i in range(runs):
+        title = f"ghostbench{os.getpid()}{i}"
+        t0 = time.monotonic()
+        proc = subprocess.Popen(["xfce4-terminal", "-T", title, "--disable-server",
+                                 "-e", "sleep 6"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            subprocess.run(["xdotool", "search", "--sync", "--name", title],
+                           capture_output=True, timeout=20, check=True)
+            times.append((time.monotonic() - t0) * 1000)
+        except (subprocess.SubprocessError, OSError):
+            pass
+        finally:
+            subprocess.run(["xdotool", "search", "--name", title, "windowkill"],
+                           capture_output=True, timeout=10)
+            proc.terminate()
+        time.sleep(0.3)
+    if times:
+        out["app_launch_ms"] = round(sum(times) / len(times), 1)
+        out["runs_ms"] = [round(t, 1) for t in times]
+    else:
+        out["note"] = "aucun lancement mesuré"
+    return out
+
+
+def measure_hardware() -> dict:
+    cpu = {}
+    for line in Path("/proc/cpuinfo").read_text().splitlines():
+        if line.startswith("model name"):
+            cpu["model"] = line.split(":", 1)[1].strip()
+            break
+    cpu["cores"] = os.cpu_count()
+    gov = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    if gov.exists():
+        cpu["governor"] = gov.read_text().strip()
+    screen = None
+    if os.environ.get("DISPLAY") and shutil.which("xdpyinfo"):
+        m = re.search(r"dimensions:\s+(\S+)", sh(["xdpyinfo"]))
+        if m:
+            screen = m.group(1)
+    return {"cpu": cpu, "screen": screen,
+            "kernel": os.uname().release,
+            "os": next((l.split("=", 1)[1].strip('"\n')
+                        for l in Path("/etc/os-release").read_text().splitlines()
+                        if l.startswith("PRETTY_NAME=")), "?")}
+
+
+# ---------------------------------------------------------------------------
+#  Restitution
+# ---------------------------------------------------------------------------
+def verdicts(data: dict) -> list[tuple]:
+    flat = {}
+    for section in data.values():
+        if isinstance(section, dict):
+            flat.update({k: v for k, v in section.items() if isinstance(v, (int, float))})
+    rows = []
+    for key, (label, target, unit, direction) in TARGETS.items():
+        value = flat.get(key)
+        if value is None:
+            rows.append((label, "unavailable", f"{direction} {target:g} {unit}", "—"))
+            continue
+        ok = value < target if direction == "<" else value > target
+        rows.append((label, f"{value:g} {unit}", f"{direction} {target:g} {unit}",
+                     "PASS" if ok else "FAIL"))
+    return rows
+
+
+def render_text(data: dict) -> str:
+    lines = ["", "  GHOSTBOARD OS — benchmark", "  " + "─" * 56, ""]
+    hw = data["hardware"]
+    lines.append(f"  {hw['os']}  |  {hw['cpu'].get('model','?')}  "
+                 f"({hw['cpu'].get('cores','?')} cœurs)")
+    lines.append(f"  noyau {hw['kernel']}  |  écran {hw['screen'] or 'aucun'}"
+                 f"  |  gouverneur {hw['cpu'].get('governor','?')}")
+    lines.append("")
+    lines.append(f"  {'Mesure':<34s} {'Obtenu':>14s} {'Cible':>14s}  Verdict")
+    lines.append("  " + "─" * 74)
+    for label, got, target, verdict in verdicts(data):
+        lines.append(f"  {label:<34s} {got:>14s} {target:>14s}  {verdict}")
+    lines.append("")
+
+    boot = data["boot"]
+    if "systemd_line" in boot:
+        lines.append(f"  systemd : {boot['systemd_line']}")
+    if "note" in boot:
+        lines.append(f"  ! {boot['note']}")
+
+    gpu = data["gpu"]
+    unexpected = gpu.get("unexpected", [])
+    if unexpected:
+        lines.append("  ! clients GPU inattendus après le boot : "
+                     + ", ".join(f"{c['process']}({c['pid']})" for c in unexpected))
+    else:
+        lines.append("  Aucune boucle GPU résiduelle après le boot.")
+
+    svc = data["services"]
+    lines.append(f"  {svc.get('running_services','?')} services actifs"
+                 + (f", {len(svc['failed'])} en échec : {', '.join(svc['failed'])}"
+                    if svc.get("failed") else ", aucun en échec"))
+    if svc.get("slowest_units"):
+        lines.append("")
+        lines.append("  Unités les plus lentes au démarrage :")
+        for u in svc["slowest_units"][:8]:
+            lines.append(f"    {u['seconds']:>7.3f} s  {u['unit']}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_markdown(data: dict) -> str:
+    hw = data["hardware"]
+    out = [
+        "<!-- GHOSTBOARD-BENCH:BEGIN — generated by `ghost-bench --markdown`. Do not edit by hand. -->",
+        "",
+        f"_Measured on {time.strftime('%Y-%m-%d %H:%M %Z')}_",
+        "",
+        f"- **Machine** — {hw['cpu'].get('model','?')}, {hw['cpu'].get('cores','?')} cores, "
+        f"governor `{hw['cpu'].get('governor','?')}`",
+        f"- **System** — {hw['os']}, kernel `{hw['kernel']}`",
+        f"- **Display** — {hw['screen'] or 'no X session'}",
+        "",
+        "| Measurement | Result | Target | Verdict |",
+        "| --- | ---: | ---: | :---: |",
+    ]
+    for label, got, target, verdict in verdicts(data):
+        out.append(f"| {label} | {got} | {target} | {verdict} |")
+    out.append("")
+
+    boot = data["boot"]
+    if "systemd_line" in boot:
+        out.append(f"**Boot breakdown** — {boot['systemd_line']}")
+        out.append("")
+    svc = data["services"]
+    if svc.get("slowest_units"):
+        out.append("**Slowest units at boot**")
+        out.append("")
+        out.append("| Unit | Time |")
+        out.append("| --- | ---: |")
+        for u in svc["slowest_units"][:10]:
+            out.append(f"| `{u['unit']}` | {u['seconds']:.3f} s |")
+        out.append("")
+    out.append(f"**Running services** — {svc.get('running_services','?')}"
+               + (f" · **failed:** {', '.join(svc['failed'])}" if svc.get("failed") else " · none failed"))
+    gpu = data["gpu"]
+    out.append("")
+    out.append("**GPU after boot** — "
+               + ("no residual client (WebGL context destroyed as intended)"
+                  if not gpu.get("unexpected")
+                  else "unexpected clients: "
+                       + ", ".join(f"`{c['process']}`" for c in gpu["unexpected"])))
+    st = data["storage"]
+    if "root_mount_options" in st:
+        out.append("")
+        out.append(f"**Root mount options** — `{st['root_mount_options']}`")
+    out.append("")
+    out.append("<!-- GHOSTBOARD-BENCH:END -->")
+    return "\n".join(out)
+
+
+def write_markdown(path: Path, block: str) -> None:
+    """Remplace la section balisée, ou l'ajoute. Le texte rédigé autour du
+    tableau est préservé : seules les mesures sont régénérées."""
+    begin = "<!-- GHOSTBOARD-BENCH:BEGIN"
+    end = "<!-- GHOSTBOARD-BENCH:END -->"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if begin in text and end in text:
+        head = text[:text.index(begin)]
+        tail = text[text.index(end) + len(end):]
+        path.write_text(head + block + tail, encoding="utf-8")
+    else:
+        sep = "\n\n" if text and not text.endswith("\n\n") else ""
+        path.write_text(text + sep + block + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Mesures de performance GHOSTBOARD OS")
+    ap.add_argument("--json", action="store_true", help="sortie JSON brute")
+    ap.add_argument("--markdown", metavar="FILE",
+                    help="écrit la section chiffrée dans ce fichier Markdown")
+    ap.add_argument("--mark-ready", action="store_true",
+                    help="horodate « bureau prêt » (appelé au démarrage de session)")
+    ap.add_argument("--quick", action="store_true",
+                    help="saute les mesures longues (disque, lancement d'app)")
+    args = ap.parse_args()
+
+    if args.mark_ready:
+        RUNTIME.mkdir(parents=True, exist_ok=True)
+        DESKTOP_READY.write_text(f"{uptime_now():.3f}\n")
+        return 0
+
+    data = {
+        "hardware": measure_hardware(),
+        "boot": measure_boot(),
+        "memory": measure_memory(),
+        "cpu": measure_cpu(2.0 if args.quick else 4.0),
+        "gpu": measure_gpu_loops(),
+        "services": measure_services(),
+        "storage": {"source": "sautée (--quick)"} if args.quick else measure_storage(),
+        "app": {"source": "sautée (--quick)"} if args.quick else measure_app_launch(),
+    }
+
+    if args.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        print(render_text(data))
+    if args.markdown:
+        write_markdown(Path(args.markdown), render_markdown(data))
+        print(f"  Section chiffrée écrite dans {args.markdown}")
+
+    return 0 if all(v[3] in ("PASS", "—") for v in verdicts(data)) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

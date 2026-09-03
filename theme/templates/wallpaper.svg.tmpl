@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- {{meta.os_name}} — fond d'écran {{layout.screen_w}}x{{layout.screen_h}}. GÉNÉRÉ. NE PAS ÉDITER.
+     Sobre par principe : le fond est presque toujours caché par une fenêtre.
+     Il ne doit rien coûter et ne jamais attirer l'œil. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="{{layout.screen_w}}" height="{{layout.screen_h}}"
+     viewBox="0 0 {{layout.screen_w}} {{layout.screen_h}}">
+  <defs>
+    <!-- Trame technique très faible : donne de la matière sans bruit visuel -->
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="0.5" cy="0.5" r="0.5" fill="{{separator}}" opacity="0.55"/>
+    </pattern>
+  </defs>
+
+  <rect width="100%" height="100%" fill="{{bg}}"/>
+  <rect width="100%" height="100%" fill="url(#grid)"/>
+
+  <!-- Logotype : police d'affichage, réservée aux titres et au logotype -->
+  <text x="{{wm_x}}" y="{{wm_y}}"
+        font-family="{{font.display}}, {{font.ui}}, monospace"
+        font-size="34" font-weight="600" letter-spacing="7"
+        fill="{{text}}" opacity="0.92">GHOSTBOARD</text>
+
+  <!-- Filet d'accent : unique touche de couleur du fond -->
+  <rect x="{{wm_x}}" y="{{rule_y}}" width="{{rule_w}}" height="2" fill="{{accent}}" opacity="0.9"/>
+
+  <text x="{{wm_x}}" y="{{tagline_y}}"
+        font-family="{{font.ui}}, monospace"
+        font-size="12" letter-spacing="3.2"
+        fill="{{text_dim}}">{{meta.slogan}}</text>
+
+  <!-- Repère discret en bas à droite : résolution native de la dalle -->
+  <text x="{{layout.screen_w}}" y="{{corner_y}}" text-anchor="end"
+        font-family="{{font.ui}}, monospace" font-size="10" letter-spacing="1.5"
+        fill="{{text_dim}}" opacity="0.5" dx="-14">{{layout.screen_w}}x{{layout.screen_h}}</text>
+</svg>

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  GHOSTBOARD OS — gestionnaire de fenêtres.
+  Fenêtres classiques, boutons à DROITE (ordre Windows), zéro animation.
+  Le compositeur reste ACTIF : sans lui, pas de translucidité de la barre.
+  Il coûte peu sur l'iGPU du N100 et rien au repos, contrairement à une
+  animation qui redessine en permanence.
+-->
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="theme" type="string" value="GhostboardSpectral"/>
+    <property name="title_font" type="string" value="Martian Mono Medium 11"/>
+    <property name="title_alignment" type="string" value="center"/>
+    <!-- O=menu T=épingler H=réduire S=ombrer M=agrandir C=fermer  |=séparateur
+         Tout ce qui précède | va à gauche : rien. Boutons à droite. -->
+    <property name="button_layout" type="string" value="|HMC"/>
+    <property name="button_offset" type="int" value="2"/>
+    <property name="button_spacing" type="int" value="1"/>
+
+    <property name="use_compositing" type="bool" value="true"/>
+    <property name="frame_opacity" type="int" value="100"/>
+    <property name="inactive_opacity" type="int" value="100"/>
+    <property name="move_opacity" type="int" value="100"/>
+    <property name="resize_opacity" type="int" value="100"/>
+    <property name="popup_opacity" type="int" value="100"/>
+    <property name="show_frame_shadow" type="bool" value="false"/>
+    <property name="show_popup_shadow" type="bool" value="false"/>
+    <property name="show_dock_shadow" type="bool" value="false"/>
+    <!-- Aucune animation d'ouverture/fermeture. C'est la règle de l'OS. -->
+    <property name="zoom_desktop" type="bool" value="false"/>
+    <property name="zoom_pointer" type="bool" value="false"/>
+
+    <property name="click_to_focus" type="bool" value="true"/>
+    <property name="focus_new" type="bool" value="true"/>
+    <property name="raise_on_click" type="bool" value="true"/>
+    <property name="raise_on_focus" type="bool" value="false"/>
+    <property name="snap_to_border" type="bool" value="true"/>
+    <property name="snap_to_windows" type="bool" value="true"/>
+    <property name="snap_width" type="int" value="8"/>
+    <property name="wrap_workspaces" type="bool" value="false"/>
+    <property name="workspace_count" type="int" value="2"/>
+    <!-- Écran de 480 px de haut : une fenêtre non maximisée est vite inutile.
+         Le glisser-en-haut maximise, comme sur Windows. -->
+    <property name="tile_on_move" type="bool" value="true"/>
+    <property name="borderless_maximize" type="bool" value="true"/>
+    <property name="titleless_maximize" type="bool" value="false"/>
+    <property name="mousewheel_rollup" type="bool" value="false"/>
+    <property name="urgent_blink" type="bool" value="false"/>
+    <property name="cycle_draw_frame" type="bool" value="false"/>
+    <property name="cycle_preview" type="bool" value="false"/>
+    <property name="box_move" type="bool" value="false"/>
+    <property name="box_resize" type="bool" value="false"/>
+  </property>
+</channel>

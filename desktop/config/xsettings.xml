@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GHOSTBOARD OS — réglages GTK globaux.
+     Police d'interface : 15 px = 11.25 pt à 96 dpi. Plancher de lisibilité
+     sur une dalle de 4 pouces ; ne pas descendre en dessous. -->
+<channel name="xsettings" version="1.0">
+  <property name="Net" type="empty">
+    <property name="ThemeName" type="string" value="GhostboardSpectral"/>
+    <property name="IconThemeName" type="string" value="Papirus-Dark"/>
+    <property name="DoubleClickTime" type="int" value="350"/>
+    <property name="DndDragThreshold" type="int" value="8"/>
+    <property name="CursorBlink" type="bool" value="false"/>
+    <property name="SoundThemeName" type="string" value=""/>
+    <property name="EnableEventSounds" type="bool" value="false"/>
+    <property name="EnableInputFeedbackSounds" type="bool" value="false"/>
+  </property>
+  <property name="Xft" type="empty">
+    <property name="DPI" type="int" value="96"/>
+    <property name="Antialias" type="int" value="1"/>
+    <property name="Hinting" type="int" value="1"/>
+    <property name="HintStyle" type="string" value="hintslight"/>
+    <property name="RGBA" type="string" value="rgb"/>
+    <property name="Lcdfilter" type="string" value="lcddefault"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="FontName" type="string" value="IBM Plex Mono 11.2"/>
+    <property name="MonospaceFontName" type="string" value="IBM Plex Mono 11.2"/>
+    <property name="CursorThemeName" type="string" value="Adwaita"/>
+    <property name="CursorThemeSize" type="int" value="20"/>
+    <property name="DecorationLayout" type="string" value=":minimize,maximize,close"/>
+    <!-- Barres de menu et icônes de boutons coupées : 480 px de haut, chaque
+         rangée compte. -->
+    <property name="ButtonImages" type="bool" value="false"/>
+    <property name="MenuImages" type="bool" value="true"/>
+    <property name="ToolbarStyle" type="string" value="icons"/>
+    <property name="EnableAnimations" type="bool" value="false"/>
+    <property name="PrimaryButtonWarpsSlider" type="bool" value="true"/>
+  </property>
+</channel>

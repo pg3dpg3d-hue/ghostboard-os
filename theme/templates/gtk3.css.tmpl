@@ -1,0 +1,262 @@
+/* ==========================================================================
+   {{meta.os_name}} — GTK 3
+   GÉNÉRÉ par theme/render-theme.py depuis brand/palette.toml. NE PAS ÉDITER.
+   Structure : Windows 11. Habillage : GHOSTBOARD.
+   Contrainte permanente : dalle 800x480. Chaque pixel de marge est un pixel
+   de contenu en moins — d'où les paddings serrés et les scrollbars fines.
+   ========================================================================== */
+
+@define-color gb_bg          {{bg}};
+@define-color gb_panel       {{panel}};
+@define-color gb_surface     {{surface}};
+@define-color gb_sep         {{separator}};
+@define-color gb_accent      {{accent}};
+@define-color gb_accent_dim  {{accent_dim}};
+@define-color gb_input       {{input}};
+@define-color gb_text        {{text}};
+@define-color gb_dim         {{text_dim}};
+@define-color gb_hover       {{hover}};
+@define-color gb_active      {{active}};
+
+@define-color theme_bg_color            {{bg}};
+@define-color theme_base_color          {{surface}};
+@define-color theme_fg_color            {{text}};
+@define-color theme_text_color          {{text}};
+@define-color theme_selected_bg_color   {{accent}};
+@define-color theme_selected_fg_color   {{on_accent}};
+@define-color insensitive_fg_color      {{text_disabled}};
+@define-color borders                   {{separator}};
+@define-color warning_color             {{term.yellow}};
+@define-color error_color               {{input}};
+@define-color success_color             {{term.green}};
+
+* {
+  /* Aucune transition par défaut. Pas d'animation gratuite : c'est la règle. */
+  transition: none;
+  outline: none;
+  -GtkScrollbar-has-backward-stepper: false;
+  -GtkScrollbar-has-forward-stepper: false;
+}
+
+window, .background, dialog {
+  background-color: {{bg}};
+  color: {{text}};
+  font-family: "{{font.ui}}", monospace;
+  font-size: {{font.ui_size_px}}px;
+}
+
+/* ---- Titres de fenêtre : SEUL endroit avec la police d'affichage -------- */
+headerbar, .titlebar {
+  background-color: {{panel}};
+  border-bottom: 1px solid {{separator}};
+  color: {{text}};
+  min-height: 28px;
+  padding: 0 4px;
+  border-radius: {{layout.window_radius}}px {{layout.window_radius}}px 0 0;
+}
+headerbar label.title, .titlebar label.title {
+  font-family: "{{font.display}}", "{{font.ui}}", monospace;
+  font-size: {{font.title_size_px}}px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  color: {{text}};
+}
+headerbar:backdrop, .titlebar:backdrop { background-color: {{bg}}; }
+headerbar:backdrop label.title { color: {{text_dim}}; }
+
+/* ---- Boutons ----------------------------------------------------------- */
+button {
+  background-color: {{surface}};
+  border: 1px solid {{separator}};
+  border-radius: 6px;
+  color: {{text}};
+  padding: 3px 10px;
+  min-height: 22px;
+  min-width: 22px;
+}
+button:hover        { background-color: {{hover}};   border-color: {{accent_dim}}; }
+button:active,
+button:checked      { background-color: {{active}};  border-color: {{accent}}; color: {{text}}; }
+button:disabled     { background-color: {{bg}}; color: {{text_disabled}}; border-color: {{separator}}; }
+button.suggested-action {
+  background-color: {{accent}}; color: {{on_accent}}; border-color: {{accent}};
+}
+button.suggested-action:hover { background-color: {{accent_bright}}; }
+button.destructive-action {
+  background-color: transparent; color: {{input}}; border-color: {{input}};
+}
+button.flat, button.titlebutton { background: transparent; border-color: transparent; }
+button.flat:hover, button.titlebutton:hover { background-color: {{hover}}; }
+/* Fermer : la seule action irréversible de la barre de titre -> couleur d'erreur */
+button.titlebutton.close:hover { background-color: {{input}}; color: {{bg}}; }
+
+/* ---- Champs de saisie : ce que tape l'utilisateur ----------------------- */
+entry, spinbutton, textview text {
+  background-color: {{surface}};
+  border: 1px solid {{separator}};
+  border-radius: 6px;
+  color: {{input}};
+  caret-color: {{input}};
+  padding: 3px 8px;
+  min-height: 24px;
+  font-family: "{{font.ui}}", monospace;
+}
+entry:focus, spinbutton:focus { border-color: {{accent}}; }
+entry:disabled { color: {{text_disabled}}; }
+entry placeholder, entry text placeholder { color: {{text_dim}}; }
+entry.error { border-color: {{input}}; }
+selection, ::selection {
+  background-color: {{selection_bg}};
+  color: {{selection_fg}};
+}
+
+/* ---- Listes et arbres -------------------------------------------------- */
+treeview.view, list, list row {
+  background-color: transparent;
+  color: {{text}};
+  border-color: {{separator}};
+}
+treeview.view:hover, list row:hover        { background-color: {{hover}}; }
+treeview.view:selected, list row:selected  { background-color: {{accent}}; color: {{on_accent}}; }
+treeview.view header button {
+  background-color: {{panel}}; border-radius: 0; border-color: {{separator}};
+  color: {{text_dim}};
+}
+
+/* ---- Menus et popovers : surfaces flottantes ---------------------------- */
+menu, .menu, popover, popover.background, .context-menu {
+  background-color: {{popup_bg}};
+  border: 1px solid {{separator}};
+  border-radius: 8px;
+  padding: 4px;
+  color: {{text}};
+}
+menuitem, .menuitem {
+  border-radius: 5px;
+  padding: 4px 10px;
+  min-height: 22px;
+}
+menuitem:hover, .menuitem:hover { background-color: {{accent}}; color: {{on_accent}}; }
+menuitem:disabled { color: {{text_disabled}}; }
+separator, menu separator { background-color: {{separator}}; min-height: 1px; min-width: 1px; }
+
+/* ---- Onglets ----------------------------------------------------------- */
+notebook > header { background-color: {{bg}}; border-color: {{separator}}; }
+notebook > header > tabs > tab {
+  background-color: transparent;
+  color: {{text_dim}};
+  border: none;
+  padding: 3px 10px;
+  min-height: 24px;
+  /* Pas de transition d'onglet. Voulu. */
+}
+notebook > header > tabs > tab:checked {
+  color: {{text}};
+  box-shadow: inset 0 -2px {{accent}};
+}
+notebook > header > tabs > tab:hover { color: {{text}}; }
+
+/* ---- Scrollbars : fines, l'écran est petit ----------------------------- */
+scrollbar {
+  background-color: transparent;
+  border: none;
+}
+scrollbar slider {
+  background-color: {{text_dim}};
+  border-radius: 4px;
+  min-width: 6px;
+  min-height: 6px;
+  margin: 2px;
+}
+scrollbar slider:hover  { background-color: {{accent}}; }
+scrollbar trough        { background-color: transparent; }
+
+/* ---- Divers ------------------------------------------------------------ */
+progressbar progress { background-color: {{accent}}; border-radius: 3px; }
+progressbar trough    { background-color: {{surface}}; border-radius: 3px; }
+switch                { background-color: {{surface}}; border: 1px solid {{separator}}; border-radius: 10px; }
+switch:checked        { background-color: {{accent}}; border-color: {{accent}}; }
+switch slider         { background-color: {{text}}; border-radius: 50%; }
+check, radio          { background-color: {{surface}}; border: 1px solid {{separator}}; }
+check:checked, radio:checked { background-color: {{accent}}; border-color: {{accent}}; color: {{on_accent}}; }
+tooltip, tooltip.background {
+  background-color: {{panel}};
+  border: 1px solid {{separator}};
+  border-radius: 6px;
+  color: {{text}};
+}
+scale slider  { background-color: {{accent}}; border-radius: 50%; min-width: 12px; min-height: 12px; }
+scale trough  { background-color: {{surface}}; border-radius: 3px; min-height: 4px; }
+scale highlight { background-color: {{accent}}; border-radius: 3px; }
+infobar.error   { background-color: {{error_dim}}; color: {{text}}; }
+infobar.warning { background-color: {{surface}}; color: {{term.yellow}}; }
+link, *:link    { color: {{accent}}; }
+
+/* ==========================================================================
+   BARRE DES TÂCHES — structure Windows 11 : centrée, flottante, arrondie.
+   Le décollement du bas est fait par la marge du panneau (xfconf), la forme
+   par ce border-radius. Les deux doivent rester cohérents.
+   ========================================================================== */
+#XfcePanelWindow {
+  background-color: {{taskbar_bg}};
+  border: 1px solid {{separator}};
+  border-radius: {{layout.taskbar_radius}}px;
+}
+#XfcePanelWindow button,
+.xfce4-panel button {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: {{text}};
+  padding: 0 6px;
+  min-height: {{layout.icon_size}}px;
+  min-width: {{layout.icon_size}}px;
+}
+#XfcePanelWindow button:hover, .xfce4-panel button:hover { background-color: {{hover}}; }
+/* Fenêtre au premier plan : soulignée en accent, comme Windows 11 */
+#XfcePanelWindow button:checked, .xfce4-panel button:checked {
+  background-color: {{active}};
+  box-shadow: inset 0 -2px {{accent}};
+}
+.xfce4-panel label { color: {{text}}; font-size: {{font.ui_size_px}}px; }
+#XfcePanelWindow .tasklist button { min-width: 30px; }
+
+/* Horloge à droite : de la donnée -> monospace, texte atténué */
+#XfcePanelWindow .clock, .xfce4-panel .clock label {
+  font-family: "{{font.mono}}", monospace;
+  color: {{text_dim}};
+  font-size: {{font.ui_size_px}}px;
+}
+
+/* ---- Menu démarrer (Whisker) ------------------------------------------- */
+#whiskermenu-window {
+  background-color: {{startmenu_bg}};
+  border: 1px solid {{separator}};
+  border-radius: 10px;
+}
+#whiskermenu-window entry {
+  /* Recherche en haut : c'est le chemin principal vers une app au clavier */
+  background-color: {{surface}};
+  border: 1px solid {{separator}};
+  border-radius: 8px;
+  color: {{input}};
+  min-height: 28px;
+  font-size: {{font.ui_size_px}}px;
+}
+#whiskermenu-window entry:focus { border-color: {{accent}}; }
+#whiskermenu-window button { border-radius: 8px; }
+#whiskermenu-window .view:selected, #whiskermenu-window row:selected {
+  background-color: {{accent}}; color: {{on_accent}};
+}
+#whiskermenu-window separator { background-color: {{separator}}; }
+
+/* ---- Bureau ------------------------------------------------------------ */
+XfdesktopIconView.view {
+  background-color: transparent;
+  color: {{text}};
+}
+XfdesktopIconView.view:active, XfdesktopIconView.view .rubberband {
+  background-color: {{accent}};
+  color: {{on_accent}};
+  border-radius: 4px;
+}
