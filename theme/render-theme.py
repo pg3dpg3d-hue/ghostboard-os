@@ -232,13 +232,21 @@ def check(p: Palette) -> int:
     else:
         print(f"  OK  police d'interface {p.font['ui_size_px']}px >= 15px")
 
-    budget = (p.boot["converge_ms"] + p.boot["hold_ms"] + p.boot["fadeout_ms"])
-    if budget > p.boot["duration_ms"] + 1:
-        print(f"  KO  animation de boot : {budget}ms de phases pour un budget "
-              f"de {p.boot['duration_ms']}ms")
+    acts = ("ignite_ms", "seek_ms", "lock_ms", "settle_ms", "discharge_ms")
+    budget = sum(p.boot[a] for a in acts)
+    total = p.boot["duration_ms"]
+    if budget != total:
+        # Égalité stricte : les actes sont enchaînés sur une seule horloge
+        # normalisée. Un écart décale toutes les phases suivantes.
+        print(f"  KO  animation de boot : les 5 actes font {budget}ms pour un "
+              f"duration_ms de {total}ms — ils doivent être égaux")
         failures += 1
     else:
-        print(f"  OK  animation de boot : {budget}ms <= {p.boot['duration_ms']}ms")
+        print(f"  OK  animation de boot : {' + '.join(str(p.boot[a]) for a in acts)}"
+              f" = {total}ms")
+    if total > 2500:
+        print(f"  KO  animation de boot : {total}ms mange trop du budget de 20s")
+        failures += 1
 
     if p.layout["taskbar_h"] > p.layout["screen_h"] * 0.10:
         print(f"  KO  barre des tâches {p.layout['taskbar_h']}px = "

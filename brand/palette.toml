@@ -78,13 +78,20 @@ pinned_cols     = 5       # grille d'apps épinglées
 # ----------------------------------------------------------------------------
 [boot]
 enabled          = true
-duration_ms      = 1400   # cible : ~1,4 s
+duration_ms      = 1800   # séquence complète, en 5 actes
+
+# --- les 5 actes. Leur somme DOIT valoir duration_ms (vérifié par ghost-theme check)
+ignite_ms        = 220    # 1. AMORÇAGE   une ligne de balayage descend, les particules
+                          #               naissent sur son passage. Rien avant.
+seek_ms          = 380    # 2. RECHERCHE  dérive turbulente, les particules cherchent
+lock_ms          = 620    # 3. VERROU     les lettres se posent UNE PAR UNE, gauche->droite
+settle_ms        = 380    # 4. ASSISE     le filet d'accent se trace, le slogan s'écrit
+discharge_ms     = 200    # 5. DÉCHARGE   onde de choc vers l'extérieur, puis extinction
+
 particle_count   = 20000  # plafonné au nombre de pixels du logotype rasterisé
-converge_ms      = 950    # nuage -> logotype
-hold_ms          = 250    # tenue nette
-fadeout_ms       = 200    # sortie, puis destruction du contexte WebGL
-tagline          = true   # afficher le slogan en fin d'animation
-timeout_ms       = 4000   # garde-fou : au-delà, on tue et on ouvre la session
+tagline          = true   # slogan écrit caractère par caractère à l'acte 4
+readout          = true   # relevé technique en bas à gauche pendant les actes 1-2
+timeout_ms       = 4500   # garde-fou : au-delà, on tue et on ouvre la session
 
 # ----------------------------------------------------------------------------
 #  TERMINAL — 16 couleurs ANSI.

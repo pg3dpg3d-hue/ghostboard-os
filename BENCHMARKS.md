@@ -48,9 +48,11 @@ Radxa X4 is.
 
 | Check | Result | Where |
 | --- | --- | --- |
-| Boot animation renders, logotype assembles | 17 055 particles sampled from the rasterised wordmark; 35–50 frames in 1 416 ms | Chromium 800 × 480, SwiftShader (software GL) |
+| Five-act sequence renders end to end | 17 057 particles sampled, 10 letters detected; 66 frames in 1 815 ms (~36 fps) | Chromium 800 × 480, SwiftShader (software GL) |
+| Per-letter locking | Letters land sequentially — captured mid-lock with "GHOSTBOA" set and "RD" still in flight | frame capture |
 | WebGL context destroyed at the end | `[ghostboard-boot] … contexte détruit` logged every run | same |
 | Accent hue holds after brightening | mean lit-pixel hue `#A73CE4` against accent `#A855F7` | frame analysis |
+| WebGL-failure fallback fires for real | three.js blocked by the sandbox → `rendu impossible: THREE is not defined` caught, static logotype shown, page intact | bench page, CDN unreachable |
 | MCP server, protocol + tools | **22 / 22** — handshake, catalogue, screenshot/click/type/key executing for real | `Xvfb :99 -screen 0 800x480x24` |
 | MCP error handling | Invalid key combos, non-numeric and off-screen coordinates rejected; transport survives | same |
 | `ghost-bruce` board detection | **12 / 12** — CP210x, CH340, native ESP32 USB, model inference, serial number, access diagnostics | synthetic sysfs tree |
@@ -76,10 +78,10 @@ Contrast ratios, measured rather than assumed:
 Three things are expected to show up in the first real measurement. They are
 called out here so they are not mistaken for surprises.
 
-1. **Chromium startup for the splash.** The animation itself is 1.4 s, but
-   Chromium has to start and parse 365 KB of three.js first — measured at
-   ~350 ms under software rendering, likely less on the iGPU. Budget roughly
-   2.5–3 s of the 20 s for the whole splash. If that is too much,
+1. **Chromium startup for the splash.** The five-act sequence is 1.8 s (9 % of
+   the budget), but Chromium has to start and parse 365 KB of three.js first —
+   measured at ~350 ms under software rendering, likely less on the iGPU. Budget
+   roughly 2.5–3 s of the 20 s for the whole splash. If that is too much,
    `boot.enabled = false` removes it entirely.
 2. **The compositor stays on.** `use_compositing = true` in `xfwm4.xml` is
    required for the taskbar's mica translucency. It costs little on an N100 iGPU

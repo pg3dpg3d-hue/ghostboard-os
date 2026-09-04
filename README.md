@@ -192,16 +192,38 @@ coordinates stay valid whichever mode you use. See
 
 ## Boot animation
 
-The GHOSTBOARD logotype condenses out of a particle cloud — WebGL, three.js,
-~1.4 s — and then **the GL context is explicitly destroyed**
-(`WEBGL_lose_context`, all buffers disposed). Nothing keeps rendering afterwards.
-This is the only animation in the OS.
+The GHOSTBOARD logotype does not appear — it **assembles**, in five acts, from
+particles sampled off the rasterised wordmark at runtime. Then **the GL context
+is explicitly destroyed** (`WEBGL_lose_context`, all buffers disposed, render
+loop stopped). This is the only animation in the OS.
+
+![The logotype assembled](docs/boot-animation.png)
+
+| # | Act | Duration | What happens |
+| --- | --- | ---: | --- |
+| 01 | **Ignite** | 220 ms | A scanline sweeps down the panel. Particles do not exist before it passes — they are born on the line and peel off it. |
+| 02 | **Seek** | 380 ms | Turbulent drift through a procedural flow field. The cloud is searching, not converging. |
+| 03 | **Lock** | 620 ms | Letters land **one at a time**, left to right, each with a brief flash and a horizontal band tear. |
+| 04 | **Settle** | 380 ms | The accent rule draws itself left to right; the slogan types in, block cursor and all. |
+| 05 | **Discharge** | 200 ms | Radial shockwave, fade, context destroyed. |
+| | **Total** | **1800 ms** | 9 % of the 20 s boot budget |
+
+Every duration lives in `brand/palette.toml` under `[boot]`. `ghost-theme check`
+enforces that the five acts sum exactly to `duration_ms` — they run off one
+normalised clock, so a mismatch would shift every act after it.
+
+**How it stays cheap.** Letter index and edge detection are computed in the same
+raster pass that samples the particles, so per-letter locking and the chromatic
+edges cost nothing extra. Turbulence, band tear and shockwave all live in the
+vertex shader — no data returns to the CPU during the sequence. Depth modulates
+both size *and* opacity, which is what stratifies the cloud instead of leaving a
+flat wash. The glow is an additive sprite, not a post-processing pass.
 
 It runs from a session wrapper (`/usr/local/bin/ghostboard-session`), not from
-autostart, so it is the first thing drawn — no desktop flash underneath. Fallback
-order: `prefers-reduced-motion` → static logotype; WebGL failure → static
-logotype; hung frame loop → the launcher kills the window at the palette's
-`timeout_ms`. In all three cases the session opens normally.
+autostart, so it is the first thing drawn — no desktop flash underneath.
+Fallback order: `prefers-reduced-motion` → static logotype; WebGL failure →
+static logotype; hung frame loop → the launcher kills the window at the
+palette's `timeout_ms`. In all three cases the session opens normally.
 
 ```bash
 ghost-boot-splash                          # play it without rebooting
@@ -211,11 +233,17 @@ GHOSTBOARD_BOOT=0 ghostboard-session       # skip it once
 To turn it off for good: `boot.enabled = false` in `brand/palette.toml`, then
 `sudo ghost-theme apply`.
 
-Particle count, phase durations and the timeout all live in the palette's
-`[boot]` section. Particles are sampled from the rasterised logotype at runtime,
-so changing the font or the wordmark needs no mesh regeneration.
+### Standalone bench
 
----
+```bash
+python3 tools/build-boot-preview.py build/boot-bench.html
+```
+
+Produces a single self-contained page that runs **the real `boot.js`** — no
+second copy of the animation exists. It strips the ES import (three.js comes
+from a CDN as UMD), reframes the animation's CSS into an 800 × 480 box, and
+inlines the palette. Useful for iterating on the sequence without rebooting the
+deck, and for showing it to someone who does not have one.
 
 ## Offline (degraded) mode
 
