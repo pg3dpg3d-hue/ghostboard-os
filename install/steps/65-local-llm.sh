@@ -26,7 +26,10 @@ write_file "$GHOSTBOARD_SHARE/llm.json" <<JSON
   "model": "auto",
   "key": "lm-studio",
   "temperature": 0.7,
-  "system": "You are the on-device assistant of a GHOSTBOARD cyberdeck. Be concise: the screen is 4 inches. Plain text, no markdown tables."
+  "system": "You are the on-device assistant of a GHOSTBOARD cyberdeck. Be concise: the screen is 4 inches. Plain text, no markdown tables.",
+  "//ram": "Garde-fou : avertit si le modèle risque de ne pas tenir en RAM.",
+  "ram_check": true,
+  "ram_reserve_gb": 2.0
 }
 JSON
 run chmod a+r "$GHOSTBOARD_SHARE/llm.json"

@@ -34,6 +34,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -49,7 +51,7 @@ DEFAULT_BASE = "http://127.0.0.1:1234/v1"
 def _load_ink():
     on = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
     pal = {"accent": "#A855F7", "input": "#FF4D8D", "text_dim": "#6E6880",
-           "text": "#D6D2E0", "green": "#5FD7A4"}
+           "text": "#D6D2E0", "green": "#5FD7A4", "yellow": "#D9B25F"}
     share = Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard"))
     for cand in (share / "palette.json",
                  Path(os.environ.get("GHOSTBOARD_REPO", ".")) / "build/theme/share/palette.json"):
@@ -57,6 +59,7 @@ def _load_ink():
             d = json.loads(cand.read_text())
             pal.update(d.get("color", {}))
             pal["green"] = d.get("terminal", {}).get("green", pal["green"])
+            pal["yellow"] = d.get("terminal", {}).get("yellow", pal["yellow"])
             break
         except Exception:
             continue
@@ -70,7 +73,8 @@ def _load_ink():
     return {
         "accent": fg(pal["accent"]), "input": fg(pal["input"]),
         "dim": fg(pal["text_dim"]), "text": fg(pal["text"]),
-        "ok": fg(pal["green"]), "reset": "\033[0m" if on else "", "on": on,
+        "ok": fg(pal["green"]), "warn": fg(pal["yellow"]),
+        "reset": "\033[0m" if on else "", "on": on,
     }
 
 
@@ -90,7 +94,8 @@ def err(msg):
 # ---------------------------------------------------------------------------
 def load_config() -> dict:
     cfg = {"base": DEFAULT_BASE, "model": "auto", "key": "lm-studio",
-           "system": "", "temperature": 0.7}
+           "system": "", "temperature": 0.7,
+           "ram_check": True, "ram_reserve_gb": 2.0}
     for path in (Path.home() / ".config/ghostboard/llm.json",
                  Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard")) / "llm.json"):
         try:
@@ -190,6 +195,174 @@ def stream_chat(cfg, messages, on_token, temperature=None):
 
 
 # ---------------------------------------------------------------------------
+#  Garde-fou mémoire — un modèle plus gros que la RAM paginera sur le SSD et
+#  sera inutilisable. On prévient AU DÉMARRAGE, sans jamais bloquer. Les
+#  avertissements partent sur stderr : `ghost-llm - > out.txt` ne doit pas être
+#  pollué.
+# ---------------------------------------------------------------------------
+def meminfo_gb():
+    d = {}
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        k, _, v = line.partition(":")
+        try:
+            d[k] = int(v.split()[0]) / 1048576.0  # kio -> Gio
+        except (ValueError, IndexError):
+            pass
+    total = d.get("MemTotal", 0.0)
+    avail = d.get("MemAvailable", 0.0)
+    swap_used = d.get("SwapTotal", 0.0) - d.get("SwapFree", 0.0)
+    return total, avail, swap_used
+
+
+def _parse_human_size(text):
+    m = re.match(r"\s*([\d.]+)\s*([KMGT]?i?B)\s*$", str(text), re.I)
+    if not m:
+        return None
+    val = float(m.group(1))
+    mult = {"b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12,
+            "kib": 1024, "mib": 1024**2, "gib": 1024**3, "tib": 1024**4}
+    return val * mult.get(m.group(2).lower(), 1)
+
+
+def _size_from_entry(e):
+    """Cherche un champ « taille » plausible dans un dict de modèle."""
+    if not isinstance(e, dict):
+        return None
+    for k, v in e.items():
+        if "size" not in k.lower():
+            continue
+        if isinstance(v, (int, float)) and v > 1e6:
+            return float(v)
+        if isinstance(v, str):
+            b = _parse_human_size(v)
+            if b:
+                return b
+    return None
+
+
+def _id_matches(ident, model):
+    a = re.sub(r"[^a-z0-9]", "", str(ident).lower())
+    b = re.sub(r"[^a-z0-9]", "", str(model).lower())
+    if not a or not b:
+        return False
+    return a in b or b in a or Path(str(ident)).stem.lower() in str(model).lower()
+
+
+def _size_from_lms(cfg, model):
+    for args in (["lms", "ps", "--json"], ["lms", "ls", "--json"]):
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=6)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode != 0 or not r.stdout.strip():
+            continue
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            continue
+        entries = data if isinstance(data, list) else \
+            (data.get("models") or data.get("data") or [])
+        for e in entries:
+            ident = (e.get("identifier") or e.get("modelKey") or e.get("path")
+                     or e.get("id") or "") if isinstance(e, dict) else ""
+            if _id_matches(ident, model):
+                b = _size_from_entry(e)
+                if b:
+                    return b / 1e9
+    return None
+
+
+def _size_from_native_api(cfg, model):
+    host = cfg["base"].rsplit("/v1", 1)[0]
+    try:
+        resp = urllib.request.urlopen(host + "/api/v0/models", timeout=4)
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    for e in data.get("data", data if isinstance(data, list) else []):
+        if isinstance(e, dict) and _id_matches(e.get("id", ""), model):
+            b = _size_from_entry(e)
+            if b:
+                return b / 1e9
+    return None
+
+
+def _size_from_disk(cfg, model):
+    roots = [Path.home() / ".lmstudio" / "models",
+             Path.home() / ".cache" / "lm-studio" / "models",
+             Path.home() / ".local" / "share" / "lm-studio" / "models"]
+    best = None
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for gguf in list(root.rglob("*.gguf"))[:200]:
+            stem = re.sub(r"[^a-z0-9]", "", gguf.stem.lower())
+            mid = re.sub(r"[^a-z0-9]", "", str(model).lower())
+            if len(stem) >= 8 and (stem in mid or mid in stem):
+                sz = gguf.stat().st_size / 1e9
+                best = max(best or 0, sz)
+    return best
+
+
+def model_size_gb(cfg, model):
+    """Taille sur disque du modèle, en Go. Best-effort : renvoie None si aucune
+    source ne la donne (l'API OpenAI ne l'expose pas)."""
+    for fn in (_size_from_lms, _size_from_native_api, _size_from_disk):
+        try:
+            g = fn(cfg, model)
+        except Exception:
+            g = None
+        if g:
+            return g
+    return None
+
+
+def ram_preflight(cfg, model):
+    """(niveau, message) ou None. niveau ∈ crit/warn. Ne bloque jamais."""
+    if not cfg.get("ram_check", True):
+        return None
+    try:
+        total, avail, swap_used = meminfo_gb()
+    except Exception:
+        return None
+    if total <= 0:
+        return None
+    reserve = float(cfg.get("ram_reserve_gb", 2.0))
+
+    # Pression vive : si le système pagine déjà, le modèle est trop gros / il y
+    # a trop d'apps ouvertes. C'est le signal le plus fiable.
+    if swap_used > 0.25 or avail < 0.4:
+        return ("crit", f"low memory: {avail:.1f} GB free, "
+                f"{swap_used:.1f} GB swap in use — likely paging to SSD (slow).")
+
+    size = model_size_gb(cfg, model)
+    if size:
+        if size > total - 0.5:
+            return ("crit", f"model ~{size:.0f} GB > {total:.0f} GB RAM — it will "
+                    f"page from the SSD (unusable). Use a smaller quant.")
+        if size > total - reserve:
+            return ("warn", f"model ~{size:.0f} GB is tight on {total:.0f} GB RAM — "
+                    f"close other apps, keep context short.")
+        return None  # tient confortablement : silence
+    # Taille inconnue : n'alerte que si la RAM libre est franchement basse.
+    if avail < reserve + 1:
+        return ("warn", f"only {avail:.1f} GB free on {total:.0f} GB — a large "
+                f"model may not fit. `ghost-llm --check`.")
+    return None
+
+
+def emit_ram_warning(cfg, model):
+    """Affiche l'avertissement mémoire sur STDERR (jamais stdout : le mode pipe
+    ne doit pas être pollué)."""
+    v = ram_preflight(cfg, model)
+    if not v:
+        return
+    level, msg = v
+    ink = "input" if level == "crit" else "warn"
+    print(c(ink, "  ⚠ " + msg), file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 #  Modes
 # ---------------------------------------------------------------------------
 def cmd_check(cfg) -> int:
@@ -209,6 +382,19 @@ def cmd_check(cfg) -> int:
     for m in models:
         mark = c("accent", "▸") if m == active else c("dim", " ")
         print(f"  {mark} {m}" + (c("dim", "  (actif)") if m == active else ""))
+    # Bilan mémoire : le modèle actif tient-il en RAM ?
+    try:
+        total, avail, swap_used = meminfo_gb()
+        size = model_size_gb(cfg, active)
+        sz = f"{size:.1f} GB" if size else "unknown"
+        print(c("dim", f"  RAM {avail:.1f}/{total:.0f} GB free · model {sz}"))
+        v = ram_preflight(cfg, active)
+        if v:
+            print(c("input" if v[0] == "crit" else "warn", "  ⚠ " + v[1]))
+        elif size:
+            print(c("ok", "  fits in RAM"))
+    except Exception:
+        pass
     return 0
 
 
@@ -217,6 +403,7 @@ def one_shot(cfg, prompt) -> int:
         cfg["_model"] = resolve_model(cfg)
     except LLMError as e:
         err(str(e)); return 1
+    emit_ram_warning(cfg, cfg["_model"])
     messages = []
     if cfg.get("system"):
         messages.append({"role": "system", "content": cfg["system"]})
@@ -256,6 +443,7 @@ def repl(cfg) -> int:
 
     print(c("accent", "  GHOSTBOARD · LLM LOCAL") +
           c("dim", f"   {cfg['_model']}  @  {cfg['base']}"))
+    emit_ram_warning(cfg, cfg["_model"])
     print(c("dim", "  Ctrl+D ou /quit pour sortir · /help pour les commandes"))
     print()
 
@@ -355,6 +543,8 @@ def main() -> int:
     ap.add_argument("-m", "--model", help="forcer un modèle pour cet appel")
     ap.add_argument("-s", "--system", help="message système")
     ap.add_argument("-t", "--temperature", type=float, help="température")
+    ap.add_argument("--no-ram-check", action="store_true",
+                    help="ne pas vérifier si le modèle tient en RAM")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -364,6 +554,8 @@ def main() -> int:
         cfg["system"] = args.system
     if args.temperature is not None:
         cfg["temperature"] = args.temperature
+    if args.no_ram_check:
+        cfg["ram_check"] = False
 
     if args.check:
         return cmd_check(cfg)

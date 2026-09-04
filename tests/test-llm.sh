@@ -69,6 +69,31 @@ dead="$(GHOSTBOARD_LLM_BASE='http://127.0.0.1:1/v1' "$ROOT/tools/ghost-llm" --ch
   && ck "erreur claire + code non nul quand LM Studio est absent" 0 \
   || ck "erreur endpoint mort" 1 "rc=$rc $dead"
 
+
+echo
+echo "ghost-llm — garde-fou mémoire (RAM vs modèle)"
+chk="$("$ROOT/tools/ghost-llm" --check 2>&1)"
+grep -qE 'RAM [0-9.]+/[0-9]+ GB free' <<<"$chk" \
+  && ck "--check affiche le bilan RAM" 0 || ck "bilan RAM" 1 "$chk"
+
+# RAM du conteneur large -> pas de fausse alarme en usage normal
+normal_err="$("$ROOT/tools/ghost-llm" "x" 2>&1 >/dev/null)"
+[[ -z "$normal_err" ]] && ck "pas de fausse alarme quand la RAM est large" 0 \
+  || ck "fausse alarme" 1 "$normal_err"
+
+# Seuil forcé via config -> avertissement, mais UNIQUEMENT sur stderr :
+# le mode pipe (stdout) ne doit jamais être pollué.
+HT="$(mktemp -d)"; mkdir -p "$HT/.config/ghostboard"
+echo '{"ram_reserve_gb": 100}' > "$HT/.config/ghostboard/llm.json"
+so="$(HOME="$HT" "$ROOT/tools/ghost-llm" - <<<'q' 2>/dev/null)"
+se="$(HOME="$HT" "$ROOT/tools/ghost-llm" - <<<'q' 2>&1 >/dev/null)"
+rm -rf "$HT"
+if grep -q '⚠' <<<"$se" && ! grep -q '⚠' <<<"$so"; then
+  ck "avertissement sur stderr, stdout non pollué (mode pipe)" 0
+else
+  ck "séparation stderr/stdout du garde-fou" 1 "so=[$so] se=[$se]"
+fi
+
 echo
 echo "$([[ $fail -eq 0 ]] && echo SUCCÈS || echo ÉCHEC) : $pass réussi(s), $fail échec(s)"
 exit $(( fail > 0 ))

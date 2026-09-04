@@ -60,6 +60,27 @@ Resolution order (first wins):
 Dolphin build needs no config change. LM Studio ignores the API key, but the
 OpenAI protocol requires one, hence the placeholder.
 
+## Will the model fit? — the RAM guard
+
+An 18 GB model on a 16 GB (max, soldered) deck cannot fit in RAM; forcing it
+makes LM Studio page weights from the SSD on every token — **unusable** (well
+under 1 tok/s) and hard on the SSD. So `ghost-llm` checks at startup and warns
+(never blocks). The warning goes to **stderr**, so `ghost-llm - > out.txt` is
+never polluted.
+
+| Deck RAM | Model that fits (q4) | Notes |
+| --- | ---: | --- |
+| **8 GB** | **≤ ~5 GB** — 7–8B q4, or a 3B | an 8 GB model does **not** fit here |
+| **16 GB** | **≤ ~12 GB** — 14B q4, tight 20–22B q4 | an 8 GB model fits comfortably |
+
+The guard reads `MemAvailable` and, when it can, the loaded model's on-disk size
+(via `lms ps --json`, LM Studio's native `/api/v0/models`, then a scan of the
+models directory — the OpenAI API doesn't expose size). It also flags live
+memory pressure (swap in use → already paging). Tune it in `llm.json`:
+`ram_check` (default true) and `ram_reserve_gb` (headroom kept for OS + desktop
++ KV cache, default 2.0), or disable per-call with `--no-ram-check`.
+`ghost-llm --check` prints the verdict: **fits in RAM**, or the exact shortfall.
+
 ## The N100 reality
 
 Inference is on the **CPU** — the N100 has no usable GPU for this. Expect a few
