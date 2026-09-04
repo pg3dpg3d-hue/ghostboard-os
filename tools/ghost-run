@@ -55,6 +55,8 @@ GHOST_COMMANDS = [
     ("ghost-agent-session status", "Sur quel écran travaille l'agent", True),
     ("ghost-session-mode status", "Mode d'ouverture de session", True),
     ("ghost-claude", "Lancer Claude Code", True),
+    ("ghost-llm", "LLM local — chat avec Dolphin (LM Studio)", True),
+    ("ghost-llm --check", "LLM local : endpoint joignable ? modèle chargé ?", True),
     ("ghost-recon", "RECON — audit de sécurité des caméras (TUI)", False),
 ]
 

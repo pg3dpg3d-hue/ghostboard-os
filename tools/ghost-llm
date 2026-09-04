@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""
+ghost-llm — accès au LLM local du deck (LM Studio · Dolphin).
+
+L'intelligence tourne maintenant SUR la machine : LM Studio sert un modèle
+(Dolphin) derrière une API compatible OpenAI. Cet outil est le client GHOSTBOARD
+de ce point d'accès — streaming, aux couleurs de la marque, sans aucune
+dépendance (urllib de la bibliothèque standard). Il démarre instantanément et
+marche aussi bien en SSH qu'à l'écran.
+
+    ghost-llm                     chat interactif (REPL), streaming
+    ghost-llm "explique X"        une question, une réponse, puis sort
+    echo "..." | ghost-llm -      lit l'invite sur l'entrée standard (pipe)
+    ghost-llm --check             endpoint joignable ? modèle chargé ?
+    ghost-llm --models            liste les modèles servis
+
+Configuration (par ordre de priorité) :
+    variables d'env   GHOSTBOARD_LLM_BASE / GHOSTBOARD_LLM_MODEL / GHOSTBOARD_LLM_KEY
+    ~/.config/ghostboard/llm.json
+    /usr/share/ghostboard/llm.json
+    défauts           base http://127.0.0.1:1234/v1 · modèle auto (préfère « dolphin »)
+
+Dans le REPL :
+    /reset            oublier la conversation
+    /system <texte>   fixer le message système
+    /model [nom]      voir ou changer le modèle
+    /models           modèles disponibles
+    /stats            débit du dernier échange
+    /save <fichier>   écrire la conversation
+    /help  ·  Ctrl+D ou /quit pour sortir
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+DEFAULT_BASE = "http://127.0.0.1:1234/v1"
+
+# ---------------------------------------------------------------------------
+#  Couleurs — palette du système (repli si absente). Même convention que tout
+#  l'OS : accent = ce que dit la machine, rose = ce que tu tapes / les erreurs.
+# ---------------------------------------------------------------------------
+def _load_ink():
+    on = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    pal = {"accent": "#A855F7", "input": "#FF4D8D", "text_dim": "#6E6880",
+           "text": "#D6D2E0", "green": "#5FD7A4"}
+    share = Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard"))
+    for cand in (share / "palette.json",
+                 Path(os.environ.get("GHOSTBOARD_REPO", ".")) / "build/theme/share/palette.json"):
+        try:
+            d = json.loads(cand.read_text())
+            pal.update(d.get("color", {}))
+            pal["green"] = d.get("terminal", {}).get("green", pal["green"])
+            break
+        except Exception:
+            continue
+
+    def fg(hexcolor):
+        if not on:
+            return ""
+        h = hexcolor.lstrip("#")
+        return f"\033[38;2;{int(h[0:2],16)};{int(h[2:4],16)};{int(h[4:6],16)}m"
+
+    return {
+        "accent": fg(pal["accent"]), "input": fg(pal["input"]),
+        "dim": fg(pal["text_dim"]), "text": fg(pal["text"]),
+        "ok": fg(pal["green"]), "reset": "\033[0m" if on else "", "on": on,
+    }
+
+
+INK = _load_ink()
+
+
+def c(kind, s):
+    return f"{INK[kind]}{s}{INK['reset']}"
+
+
+def err(msg):
+    print(c("input", f"ghost-llm: {msg}"), file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+#  Configuration
+# ---------------------------------------------------------------------------
+def load_config() -> dict:
+    cfg = {"base": DEFAULT_BASE, "model": "auto", "key": "lm-studio",
+           "system": "", "temperature": 0.7}
+    for path in (Path.home() / ".config/ghostboard/llm.json",
+                 Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard")) / "llm.json"):
+        try:
+            cfg.update({k: v for k, v in json.loads(path.read_text()).items()
+                        if v is not None})
+            break
+        except Exception:
+            continue
+    # L'environnement l'emporte : pratique pour pointer un autre endpoint ponctuel.
+    cfg["base"] = os.environ.get("GHOSTBOARD_LLM_BASE", cfg["base"]).rstrip("/")
+    cfg["model"] = os.environ.get("GHOSTBOARD_LLM_MODEL", cfg["model"])
+    cfg["key"] = os.environ.get("GHOSTBOARD_LLM_KEY", cfg["key"])
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+#  Appels HTTP (stdlib)
+# ---------------------------------------------------------------------------
+class LLMError(Exception):
+    pass
+
+
+def _request(cfg, path, payload=None, stream=False, timeout=600):
+    url = cfg["base"] + path
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {cfg['key']}"}
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method="POST" if data else "GET")
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:400]
+        raise LLMError(f"HTTP {e.code} sur {path} — {body}") from e
+    except urllib.error.URLError as e:
+        raise LLMError(
+            f"endpoint injoignable ({cfg['base']}) : {e.reason}. "
+            f"LM Studio est-il lancé et son serveur démarré ?") from e
+    except OSError as e:
+        raise LLMError(f"connexion impossible ({cfg['base']}) : {e}") from e
+
+
+def list_models(cfg) -> list[str]:
+    resp = _request(cfg, "/models", timeout=10)
+    data = json.loads(resp.read().decode("utf-8", "replace"))
+    return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+
+
+def resolve_model(cfg, models=None) -> str:
+    """Modèle à utiliser. « auto » -> celui contenant « dolphin », sinon le
+    premier servi. On interroge l'endpoint une seule fois."""
+    if cfg["model"] and cfg["model"] != "auto":
+        return cfg["model"]
+    if models is None:
+        models = list_models(cfg)
+    if not models:
+        raise LLMError("aucun modèle chargé dans LM Studio")
+    for m in models:
+        if "dolphin" in m.lower():
+            return m
+    return models[0]
+
+
+def stream_chat(cfg, messages, on_token, temperature=None):
+    """Streame la réponse. Appelle on_token(str) pour chaque fragment.
+    Renvoie (texte_complet, n_tokens_estimés, secondes)."""
+    payload = {
+        "model": cfg["_model"],
+        "messages": messages,
+        "temperature": cfg.get("temperature", 0.7) if temperature is None else temperature,
+        "stream": True,
+    }
+    t0 = time.monotonic()
+    resp = _request(cfg, "/chat/completions", payload, stream=True)
+    full = []
+    for raw in resp:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        chunk = line[5:].strip()
+        if chunk == "[DONE]":
+            break
+        try:
+            obj = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        delta = (obj.get("choices") or [{}])[0].get("delta", {})
+        piece = delta.get("content")
+        if piece:
+            full.append(piece)
+            on_token(piece)
+    text = "".join(full)
+    dt = time.monotonic() - t0
+    # Estimation de tokens : ~4 caractères par token. LM Studio ne renvoie pas
+    # d'usage en streaming, donc c'est un ordre de grandeur, pas une mesure.
+    return text, max(1, len(text) // 4), dt
+
+
+# ---------------------------------------------------------------------------
+#  Modes
+# ---------------------------------------------------------------------------
+def cmd_check(cfg) -> int:
+    print(c("dim", f"endpoint  {cfg['base']}"))
+    try:
+        models = list_models(cfg)
+    except LLMError as e:
+        print(c("input", f"injoignable — {e}"))
+        print(c("dim", "  Démarre LM Studio, charge Dolphin, active le serveur"))
+        print(c("dim", "  (LM Studio: onglet Developer/Server, ou `lms server start`)"))
+        return 1
+    if not models:
+        print(c("input", "joignable, mais aucun modèle chargé"))
+        return 1
+    active = resolve_model(cfg, models)
+    print(c("ok", "joignable"))
+    for m in models:
+        mark = c("accent", "▸") if m == active else c("dim", " ")
+        print(f"  {mark} {m}" + (c("dim", "  (actif)") if m == active else ""))
+    return 0
+
+
+def one_shot(cfg, prompt) -> int:
+    try:
+        cfg["_model"] = resolve_model(cfg)
+    except LLMError as e:
+        err(str(e)); return 1
+    messages = []
+    if cfg.get("system"):
+        messages.append({"role": "system", "content": cfg["system"]})
+    messages.append({"role": "user", "content": prompt})
+    try:
+        sys.stdout.write(INK["accent"])
+        _, _, _ = stream_chat(cfg, messages, lambda t: (sys.stdout.write(t), sys.stdout.flush()))
+        sys.stdout.write(INK["reset"] + "\n")
+    except LLMError as e:
+        sys.stdout.write(INK["reset"])
+        err(str(e)); return 1
+    except KeyboardInterrupt:
+        sys.stdout.write(INK["reset"] + "\n"); return 130
+    return 0
+
+
+def repl(cfg) -> int:
+    try:
+        import readline  # historique + édition de ligne
+        histfile = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) \
+            / "ghostboard" / "llm-history"
+        histfile.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            readline.read_history_file(histfile)
+        except OSError:
+            pass
+    except ImportError:
+        readline = None
+        histfile = None
+
+    try:
+        cfg["_model"] = resolve_model(cfg)
+    except LLMError as e:
+        err(str(e))
+        print(c("dim", "  `ghost-llm --check` pour diagnostiquer l'endpoint."))
+        return 1
+
+    print(c("accent", "  GHOSTBOARD · LLM LOCAL") +
+          c("dim", f"   {cfg['_model']}  @  {cfg['base']}"))
+    print(c("dim", "  Ctrl+D ou /quit pour sortir · /help pour les commandes"))
+    print()
+
+    messages = []
+    if cfg.get("system"):
+        messages.append({"role": "system", "content": cfg["system"]})
+    last_stats = None
+
+    while True:
+        try:
+            line = input(c("input", "you › ") if INK["on"] else "you > ")
+        except EOFError:
+            print(); break
+        except KeyboardInterrupt:
+            print(); continue
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("/"):
+            cmd, _, arg = line[1:].partition(" ")
+            arg = arg.strip()
+            if cmd in ("quit", "exit", "q"):
+                break
+            elif cmd == "reset":
+                messages = [m for m in messages if m["role"] == "system"]
+                print(c("dim", "  conversation oubliée"))
+            elif cmd == "system":
+                messages = [m for m in messages if m["role"] != "system"]
+                if arg:
+                    messages.insert(0, {"role": "system", "content": arg})
+                    print(c("dim", "  message système fixé"))
+                else:
+                    print(c("dim", "  message système effacé"))
+            elif cmd == "model":
+                if arg:
+                    cfg["_model"] = arg
+                    print(c("dim", f"  modèle -> {arg}"))
+                else:
+                    print(c("dim", f"  modèle actuel : {cfg['_model']}"))
+            elif cmd == "models":
+                try:
+                    for m in list_models(cfg):
+                        print("  " + (c("accent", m) if m == cfg["_model"] else c("dim", m)))
+                except LLMError as e:
+                    err(str(e))
+            elif cmd == "stats":
+                if last_stats:
+                    n, dt = last_stats
+                    print(c("dim", f"  ~{n} tokens en {dt:.1f}s  ≈ {n/dt:.1f} tok/s"))
+                else:
+                    print(c("dim", "  aucun échange encore"))
+            elif cmd == "save":
+                if not arg:
+                    print(c("dim", "  usage: /save <fichier>"))
+                else:
+                    Path(arg).write_text(json.dumps(messages, indent=2, ensure_ascii=False))
+                    print(c("dim", f"  écrit : {arg}"))
+            elif cmd == "help":
+                print(c("dim", "  /reset /system <txt> /model [nom] /models /stats "
+                        "/save <f> /quit"))
+            else:
+                print(c("dim", f"  commande inconnue : /{cmd}  (/help)"))
+            continue
+
+        messages.append({"role": "user", "content": line})
+        sys.stdout.write(c("dim", "llm ") + INK["accent"])
+        sys.stdout.flush()
+        try:
+            text, n, dt = stream_chat(cfg, messages,
+                                      lambda t: (sys.stdout.write(t), sys.stdout.flush()))
+            sys.stdout.write(INK["reset"] + "\n")
+            messages.append({"role": "assistant", "content": text})
+            last_stats = (n, dt)
+        except LLMError as e:
+            sys.stdout.write(INK["reset"] + "\n")
+            err(str(e))
+            messages.pop()  # retire l'invite restée sans réponse
+        except KeyboardInterrupt:
+            sys.stdout.write(INK["reset"] + "\n" + c("dim", "  (interrompu)") + "\n")
+            messages.pop()
+        if readline and histfile:
+            try:
+                readline.write_history_file(histfile)
+            except OSError:
+                pass
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="ghost-llm", add_help=True,
+        description="Client du LLM local (LM Studio · Dolphin)")
+    ap.add_argument("prompt", nargs="*", help="question ponctuelle (sinon : REPL)")
+    ap.add_argument("--check", action="store_true", help="tester l'endpoint")
+    ap.add_argument("--models", action="store_true", help="lister les modèles")
+    ap.add_argument("-m", "--model", help="forcer un modèle pour cet appel")
+    ap.add_argument("-s", "--system", help="message système")
+    ap.add_argument("-t", "--temperature", type=float, help="température")
+    args = ap.parse_args()
+
+    cfg = load_config()
+    if args.model:
+        cfg["model"] = args.model
+    if args.system is not None:
+        cfg["system"] = args.system
+    if args.temperature is not None:
+        cfg["temperature"] = args.temperature
+
+    if args.check:
+        return cmd_check(cfg)
+    if args.models:
+        try:
+            for m in list_models(cfg):
+                print(m)
+            return 0
+        except LLMError as e:
+            err(str(e)); return 1
+
+    # invite ponctuelle : arguments, ou « - » pour lire stdin
+    prompt = " ".join(args.prompt).strip()
+    if prompt == "-" or (not prompt and not sys.stdin.isatty()):
+        prompt = sys.stdin.read().strip()
+    if prompt:
+        return one_shot(cfg, prompt)
+    return repl(cfg)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

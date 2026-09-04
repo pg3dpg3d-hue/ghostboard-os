@@ -44,7 +44,12 @@ if [[ "$online" -eq 0 ]]; then
   echo "  Le raisonnement de Claude est dans le cloud : sans réseau,"
   echo "  Claude Code ne peut pas répondre."
   echo
+  echo "$(accent '  Raisonnement LOCAL disponible : ghost-llm')"
+  echo "$(faint '    Le deck a son propre LLM (LM Studio · Dolphin). Sans réseau,')"
+  echo "$(faint '    ghost-llm répond quand même — c'"'"'est le mode local.')"
+  echo
   echo "$(faint '  Ce qui reste utilisable hors ligne :')"
+  echo "$(faint '    ghost-llm      LLM local (Dolphin via LM Studio)')"
   echo "$(faint '    ghost-bruce    cartes ESP32, console série, WebUI locale')"
   echo "$(faint '    ghost-status   état du système')"
   echo "$(faint '    ghost-bench    mesures de performance')"

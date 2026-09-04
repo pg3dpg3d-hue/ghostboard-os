@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AI · Local LLM
+Comment=Chat with the on-device model (LM Studio · Dolphin) — streaming, keyboard
+Exec=xfce4-terminal -T "AI · Local LLM" -e ghost-llm
+Icon=applications-science
+Terminal=false
+Categories=System;Utility;
+Keywords=llm;ai;dolphin;lmstudio;chat;local;offline;
+StartupNotify=false

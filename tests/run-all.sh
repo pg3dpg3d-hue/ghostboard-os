@@ -37,6 +37,9 @@ hr "Bureau de démonstration (interface)"
 # deck lui-même. La suite ne doit pas dépendre d'un Chromium de test.
 node tests/test-desktop.js || rc=1
 
+hr "LLM local (ghost-llm contre un faux LM Studio)"
+bash tests/test-llm.sh || rc=1
+
 hr "Module RECON · Camera Audit (unités)"
 python3 camera-audit/tests/test_units.py || rc=1
 # La TUI (Textual) n'est pas installée dans la suite du dépôt : test_smoke.py

@@ -206,21 +206,32 @@ Mono** everywhere else, 15 px floor.
 
 ## Architecture
 
+Reasoning runs **on the deck** — an on-device LLM (LM Studio serving Dolphin)
+is the default and works offline. Claude Code stays available for heavier,
+tool-using work when there's a network. Two brains, local first.
+
 ```
-  Cloud                          The deck (Radxa X4, N100)
-  ─────                          ─────────────────────────
-  Anthropic API  ◄──────────►   Claude Code
-   (reasoning)                    │  terminal + files
-                                  │
-                                  ▼  MCP, stdio
-                             ghostboard-computer-use
-                                  │  screenshot · click · type · key
-                                  ▼
-                             X display (:0, or :1 for a dedicated agent screen)
+  On the deck (Radxa X4, N100)                 Cloud (optional, online)
+  ────────────────────────────                 ────────────────────────
+  LM Studio · Dolphin   ◄── ghost-llm          Anthropic API
+   OpenAI API :1234/v1      (local reasoning)    ▲
+                                                 │ ghost-claude
+  Claude Code  ──────────────────────────────────┘  (agentic, when online)
+   │  terminal + files
+   ▼  MCP, stdio
+  ghostboard-computer-use
+   │  screenshot · click · type · key
+   ▼
+  X display (:0, or :1 for a dedicated agent screen)
 ```
 
-No model runs locally. The N100 does not have the power for it and does not need
-it: reasoning is remote, **control of the screen is on-device**.
+**On-device reasoning** is `ghost-llm` → LM Studio → Dolphin, over an
+OpenAI-compatible API on `127.0.0.1:1234`. It is CPU inference on the N100 —
+a few tokens per second, not cloud speed — but it needs no network and leaks
+nothing. See [docs/LOCAL-LLM.md](docs/LOCAL-LLM.md).
+
+**Control of the screen** is on-device too: the computer-use MCP server drives
+the X display for whichever brain is asking.
 
 ### Computer use over MCP
 
@@ -327,24 +338,22 @@ from a CDN as UMD), reframes the animation's CSS into an 800 × 480 box, and
 inlines the palette. Useful for iterating on the sequence without rebooting the
 deck, and for showing it to someone who does not have one.
 
-## Offline (degraded) mode
+## Offline mode — now with local reasoning
 
-Reasoning is in the cloud, so **without a network Claude Code cannot answer**.
-The deck says so plainly instead of failing obscurely, and stays useful:
+The deck no longer depends on the cloud to think. **`ghost-llm` runs the local
+model (LM Studio · Dolphin) with no network at all** — that is the primary
+reasoning path, and it is exactly as available offline as online.
 
-- `ghost-claude` probes the Anthropic API before launching. If it is unreachable
-  it tells you, lists what still works, and asks before continuing anyway.
-- `ghost-status` shows network, API reachability, memory, boot time, attached
-  Bruce boards.
+`ghost-claude` (the cloud, agentic path) still needs the Anthropic API, so it
+probes it before launching and, when there's no network, points you at the
+local model instead of failing blankly. There is **no background poller and no
+tray indicator** — state is computed when you ask (`ghost-status`), never by a
+daemon running for nothing.
 
-There is **no background network poller and no tray indicator**. That is
-deliberate: a daemon polling for connectivity is exactly the kind of thing that
-"runs in the background for nothing". State is computed when you ask for it.
-
-Fully usable offline: terminal, editor, file manager, `ghost-bruce` (serial
-console, board WebUI), `ghost-bench`, `ghost-status`.
-
----
+Fully usable with no network: **`ghost-llm`** (local LLM), terminal, editor,
+file manager, `ghost-bruce` (serial console, board WebUI), `ghost-perf`,
+`ghost-bench`, `ghost-status` (which shows a **Local LLM** line: `up` + model,
+or the exact reason it isn't).
 
 ## ghost-bruce
 
@@ -388,7 +397,8 @@ desktop/
 boot-animation/             index.html, boot.js, vendor + font fetchers
 mcp-computer-use/server.js  the MCP server (no dependencies)
 tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-run,
-                            ghost-recon (RECON module launcher), ghost-theme,
+                            ghost-llm (local LLM client), ghost-recon,
+                            ghost-theme,
                             ghost-status, ghost-claude, ghost-browser,
                             ghost-boot-splash, ghostboard-session,
                             build-boot-preview.py
@@ -451,6 +461,7 @@ bash tests/run-all.sh
 | `tests/test-bruce.sh` | Board detection against a synthetic sysfs tree — CP210x, CH340, native ESP32 USB, access errors |
 | `tests/test-mcp.js` | MCP handshake, tool catalogue, and `screenshot`/`click`/`type`/`key` executing against a real X server |
 | `tests/test-perf.sh` | `ghost-perf` structure and coverage, the per-process memory breakdown, and a regression lock on the process-detection false positive |
+| `tests/test-llm.sh` | `ghost-llm` against a mock OpenAI/LM Studio server — model listing, Dolphin auto-detect, streaming, pipe, override, dead-endpoint error |
 | `camera-audit/tests/test_units.py` | RECON module — scope barrier, Finding normalisation, demo backend, report (no deps) |
 | `tests/test-desktop.js` | Drives the generated demo desktop in a real browser — terminal, simulated serial console, palette ranking, desktop switching, window drag/minimise/close. Skips cleanly with no browser. |
 
