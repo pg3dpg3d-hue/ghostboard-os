@@ -18,6 +18,9 @@ bash tests/test-config.sh || rc=1
 hr "Détection des cartes Bruce"
 bash tests/test-bruce.sh || rc=1
 
+hr "Audit de performance et répartition mémoire"
+bash tests/test-perf.sh || rc=1
+
 hr "Serveur MCP computer use"
 if command -v Xvfb >/dev/null 2>&1 && ! [[ -n "${DISPLAY:-}" ]]; then
   Xvfb :99 -screen 0 800x480x24 -nolisten tcp >/dev/null 2>&1 &

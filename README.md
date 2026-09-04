@@ -88,12 +88,16 @@ sudo ./install/ghostboard-install.sh               # the real thing
 | `70-mcp-computer-use` | The computer-use MCP server, registered with Claude Code; dedicated agent display installed but off |
 | `80-boot-animation` | Chromium, three.js, the WebGL splash, and the `GHOSTBOARD` session entry |
 | `90-ghost-bruce` | pyserial, `dialout` membership, udev rules for ESP32 USB bridges |
-| `95-perf-tuning` | Disables services that earn nothing on a deck, bounds the journal, then measures |
+| `93-session-slimming` | **Main RAM lever.** Drops the accessibility bridge, thumbnailer, Thunar daemon, irrelevant gvfs monitors, UPower — ~130 MB of services nobody asked for |
+| `95-perf-tuning` | Disables systemd services that earn nothing on a deck, bounds the journal, caps unit timeouts |
+| `96-boot-chain` | **Main boot lever.** GRUB timeout → 0, trimmed initramfs, `/tmp` in RAM, NVMe scheduler, and the option to drop the display manager entirely |
+| `99-measure` | Audits and measures. Changes nothing. |
 
 Then **reboot**, pick the **GHOSTBOARD** session at the login screen, and:
 
 ```bash
 sudo ghost-display-guard keep    # only if the panel actually works
+ghost-perf                       # every optimisation, verified on the live system
 ghost-bench --markdown /opt/ghostboard-os/BENCHMARKS.md
 ```
 
@@ -305,12 +309,54 @@ desktop/
   launchers/                the pinned apps
 boot-animation/             index.html, boot.js, vendor + font fetchers
 mcp-computer-use/server.js  the MCP server (no dependencies)
-tools/                      ghost-bruce, ghost-bench, ghost-theme, ghost-status,
-                            ghost-claude, ghost-browser, ghost-boot-splash,
-                            ghostboard-session
+tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-theme,
+                            ghost-status, ghost-claude, ghost-browser,
+                            ghost-boot-splash, ghostboard-session,
+                            build-boot-preview.py
 install/                    orchestrator, lib/common.sh, steps/
 tests/                      test-mcp.js, test-bruce.sh
 ```
+
+## Performance
+
+Targets are in [BENCHMARKS.md](BENCHMARKS.md); every knob and the reasoning
+behind it is in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**, including the
+optimisations that were deliberately **rejected** and why.
+
+```bash
+ghost-perf          # 23 checks against the running system
+ghost-perf --fails  # only the gaps, each with the exact fix
+ghost-perf --json   # exit 1 if anything is off target
+```
+
+`ghost-perf` reads **no install stamps**. A step that ran proves nothing — a
+package can re-enable a service, an upgrade can overwrite a config, a setting can
+be written and never take effect. It inspects the live system: unit states,
+`/proc`, sysfs, kernel command line, mount options.
+
+The biggest levers, in order:
+
+| Lever | Win | Command |
+| --- | ---: | --- |
+| GRUB timeout → 0 | ~5 s | part of `96-boot-chain` |
+| Drop the display manager | ~1–2 s, ~40 MB | `sudo ghost-session-mode direct` |
+| Session slimming | ~130 MB | `93-session-slimming` |
+| Trimmed initramfs | ~0.3 s | part of `96-boot-chain` |
+
+Two rules the tuning follows:
+
+- **Configuration over masking.** Turning thumbnails off in Thunar is reversible
+  from a checkbox; masking `tumblerd` breaks silently the day you want it.
+  Masking is used only where no setting exists.
+- **No daemon for a static setting.** There is no `power-profiles-daemon` and no
+  TLP: `ghostboard-power.service` is a oneshot that writes the governor, EPP,
+  PCIe ASPM and USB autosuspend at boot and exits. USB autosuspend explicitly
+  **excludes HID and CDC** — suspending the BB Q20 or an ESP32 serial bridge is
+  the kind of "optimisation" that bricks the session, and `ghost-perf` has a
+  dedicated check for it.
+
+`mitigations=off` is **not** applied. It would measurably help an N100, and the
+deck holds API credentials and browses the web. That trade is not worth it.
 
 ## Tests
 
@@ -323,6 +369,7 @@ bash tests/run-all.sh
 | `tests/test-config.sh` | XFCE XML, `.desktop` entries, JSON, full theme generation, every SVG/PNG artefact, shell/Python/Node syntax |
 | `tests/test-bruce.sh` | Board detection against a synthetic sysfs tree — CP210x, CH340, native ESP32 USB, access errors |
 | `tests/test-mcp.js` | MCP handshake, tool catalogue, and `screenshot`/`click`/`type`/`key` executing against a real X server |
+| `tests/test-perf.sh` | `ghost-perf` structure and coverage, the per-process memory breakdown, and a regression lock on the process-detection false positive |
 
 `run-all.sh` also asserts that `--dry-run` leaves `/etc/fstab` untouched.
 
@@ -336,6 +383,9 @@ bash tests/run-all.sh
 | No graphical session at all | `Ctrl+Alt+F2` for a text console, or SSH |
 | Theme looks wrong | `ghost-theme check`, then `sudo ghost-theme apply` |
 | A step broke | `sudo ./install/ghostboard-install.sh --from <step>`; log in `/var/log/ghostboard-install.log` |
+| Boots to a black screen after `96-boot-chain` | Live USB, chroot, `rm /etc/initramfs-tools/conf.d/ghostboard.conf`, `update-initramfs -u` |
+| Want the login screen back | `sudo ghost-session-mode dm` (auto-login) or `login` (password) |
+| Something feels slow | `ghost-perf --fails` names what regressed and the fix |
 | Config file overwritten | Timestamped copies in `/var/lib/ghostboard/backups/` |
 
 ---

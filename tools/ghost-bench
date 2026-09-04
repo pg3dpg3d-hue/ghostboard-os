@@ -115,6 +115,53 @@ def measure_memory() -> dict:
     }
 
 
+def measure_ram_breakdown(top: int = 12) -> dict:
+    """Où partent les mégaoctets, par exécutable.
+
+    On lit le PSS (proportional set size) depuis smaps_rollup quand il est
+    accessible : c'est la seule métrique qui n'attribue pas plusieurs fois la
+    mémoire partagée entre processus d'une même famille. Sans privilège, on
+    retombe sur le RSS, qui surestime — c'est signalé dans la sortie.
+    """
+    totals: dict[str, list] = {}
+    metric = "PSS"
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text().strip()
+        except OSError:
+            continue
+        kb = None
+        try:
+            for line in (entry / "smaps_rollup").read_text().splitlines():
+                if line.startswith("Pss:"):
+                    kb = int(line.split()[1])
+                    break
+        except OSError:
+            pass
+        if kb is None:
+            metric = "RSS"
+            try:
+                kb = int((entry / "statm").read_text().split()[1]) * (
+                    os.sysconf("SC_PAGE_SIZE") // 1024)
+            except (OSError, IndexError, ValueError):
+                continue
+        slot = totals.setdefault(comm, [0, 0])
+        slot[0] += kb
+        slot[1] += 1
+    ranked = sorted(totals.items(), key=lambda kv: -kv[1][0])[:top]
+    return {
+        "source": f"/proc/*/smaps_rollup ({metric}) — "
+                  + ("PSS : la mémoire partagée n'est comptée qu'une fois"
+                     if metric == "PSS"
+                     else "RSS : surestime, relancer en root pour le PSS"),
+        "metric": metric,
+        "top": [{"process": name, "mb": round(kb / 1024, 1), "count": n}
+                for name, (kb, n) in ranked],
+    }
+
+
 def measure_cpu(seconds: float = 4.0) -> dict:
     """CPU au repos. C'est le test qui prouve qu'aucun service ne tourne pour
     rien — et qu'aucune boucle GPU n'a survécu à l'animation de boot."""
@@ -343,6 +390,14 @@ def render_text(data: dict) -> str:
     else:
         lines.append("  Aucune boucle GPU résiduelle après le boot.")
 
+    rb = data.get("ram_breakdown", {})
+    if rb.get("top"):
+        lines.append("")
+        lines.append(f"  Répartition de la RAM ({rb['metric']}) — où partent les Mo :")
+        for row in rb["top"][:8]:
+            n = f" x{row['count']}" if row["count"] > 1 else ""
+            lines.append(f"    {row['mb']:>7.1f} Mo  {row['process']}{n}")
+
     svc = data["services"]
     lines.append(f"  {svc.get('running_services','?')} services actifs"
                  + (f", {len(svc['failed'])} en échec : {', '.join(svc['failed'])}"
@@ -387,6 +442,15 @@ def render_markdown(data: dict) -> str:
         out.append("| --- | ---: |")
         for u in svc["slowest_units"][:10]:
             out.append(f"| `{u['unit']}` | {u['seconds']:.3f} s |")
+        out.append("")
+    rb = data.get("ram_breakdown", {})
+    if rb.get("top"):
+        out.append(f"**Where the memory goes** ({rb['metric']})")
+        out.append("")
+        out.append("| Process | Memory | Instances |")
+        out.append("| --- | ---: | ---: |")
+        for row in rb["top"][:10]:
+            out.append(f"| `{row['process']}` | {row['mb']:.1f} MB | {row['count']} |")
         out.append("")
     out.append(f"**Running services** — {svc.get('running_services','?')}"
                + (f" · **failed:** {', '.join(svc['failed'])}" if svc.get("failed") else " · none failed"))
@@ -442,6 +506,7 @@ def main() -> int:
         "boot": measure_boot(),
         "memory": measure_memory(),
         "cpu": measure_cpu(2.0 if args.quick else 4.0),
+        "ram_breakdown": measure_ram_breakdown(),
         "gpu": measure_gpu_loops(),
         "services": measure_services(),
         "storage": {"source": "sautée (--quick)"} if args.quick else measure_storage(),

@@ -14,7 +14,7 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 need_root
-has_stamp 00-preflight || die "lance d'abord : sudo ./install/ghostboard-install.sh --step 00-preflight"
+require_step 00-preflight "sans filet SSH constaté, perdre l'écran c'est perdre la machine"
 
 XORG_CONF=/etc/X11/xorg.conf.d/20-ghostboard-panel.conf
 

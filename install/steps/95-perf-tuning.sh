@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DESCRIPTION: Chasse aux services inutiles, puis mesure réelle
+# DESCRIPTION: Chasse aux services systemd inutiles, journal borné, délais
 # ============================================================================
 #  Objectif : boot < 20 s, RAM au repos < 900 Mo, rien qui tourne pour rien.
 #  On désactive, puis on MESURE. Aucun chiffre n'est supposé.
@@ -62,19 +62,9 @@ DefaultTimeoutStartSec=15s
 DefaultTimeoutStopSec=10s
 SD
 
-step "Mesure"
-info "Les chiffres qui suivent sont ceux de CETTE machine, maintenant."
 run systemctl daemon-reload
-say ""
-if [[ -x /usr/local/bin/ghost-bench ]]; then
-  /usr/local/bin/ghost-bench --quick || true
-else
-  warn "ghost-bench absent — relance l'étape 50-theme"
-fi
+good "délais de démarrage bornés"
 
 say ""
-warn "Ces chiffres sont pris AVANT redémarrage : le temps de boot n'est donc"
-warn "pas encore celui de la configuration finale."
-info "Après redémarrage, ouvre une session GHOSTBOARD puis lance :"
-info "  ghost-bench --markdown $GHOSTBOARD_REPO/BENCHMARKS.md"
-info "C'est cette commande qui remplit le tableau de BENCHMARKS.md."
+info "La chaîne de démarrage (GRUB, initramfs, /tmp, ordonnanceur NVMe,"
+info "gestionnaire de session) est traitée à l'étape 96-boot-chain."

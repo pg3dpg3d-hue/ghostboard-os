@@ -86,10 +86,68 @@ fi
 run sysctl --system >/dev/null 2>&1 || true
 
 step "Énergie"
-# Le deck tourne sur powerbank : chaque watt compte. `powersave` sur un N100
-# reste très réactif — le gouverneur monte en fréquence à la demande.
-apt_install power-profiles-daemon
-if command -v powerprofilesctl >/dev/null 2>&1; then
-  run powerprofilesctl set balanced 2>/dev/null || true
-  good "profil d'énergie : balanced (powerprofilesctl set power-saver pour aller plus loin)"
-fi
+# Le deck tourne sur powerbank : chaque watt compte.
+#
+# PAS de power-profiles-daemon ni de TLP : ce sont des démons résidents pour un
+# réglage qui ne change jamais sur un appareil à alimentation unique, et l'OS
+# n'expose aucune interface pour les piloter. Un oneshot au démarrage fait le
+# même travail pour zéro processus résident.
+#
+# Gouverneur `powersave` + EPP `balance_power` sur intel_pstate : contrairement
+# à ce que le nom suggère, `powersave` sur intel_pstate n'est PAS un bridage —
+# c'est l'algorithme adaptatif du pilote, qui monte en fréquence à la demande.
+# `performance` fige la fréquence haute et ne gagne rien en réactivité perçue.
+write_file /etc/systemd/system/ghostboard-power.service <<'PWR'
+[Unit]
+Description=GHOSTBOARD — réglage d'énergie (oneshot, aucun démon résident)
+After=multi-user.target
+ConditionPathExists=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/ghost-power-tune
+
+[Install]
+WantedBy=multi-user.target
+PWR
+
+write_file /usr/local/bin/ghost-power-tune 0755 <<'TUNE'
+#!/bin/sh
+# GHOSTBOARD OS — réglage d'énergie appliqué une fois au démarrage.
+# Aucun démon : ce script s'exécute, écrit, et sort.
+set -u
+
+for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+  [ -w "$g" ] && echo powersave > "$g" 2>/dev/null
+done
+
+# EPP : indique au processeur l'arbitrage perf/énergie. balance_power garde la
+# réactivité en rafale (race-to-idle) tout en baissant la consommation au repos.
+for e in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+  [ -w "$e" ] && echo balance_power > "$e" 2>/dev/null
+done
+
+# ASPM PCIe : laisse le NVMe et le contrôleur descendre en état bas.
+[ -w /sys/module/pcie_aspm/parameters/policy ] && \
+  echo powersupersave > /sys/module/pcie_aspm/parameters/policy 2>/dev/null
+
+# Mise en veille automatique de l'USB — SAUF les périphériques d'entrée et les
+# ponts série. Endormir le clavier BB Q20 ou une carte ESP32 en pleine console
+# série est exactement le genre d'« optimisation » qui casse l'appareil.
+for d in /sys/bus/usb/devices/*/power/control; do
+  dev="${d%/power/control}"
+  cls="$(cat "$dev/bDeviceClass" 2>/dev/null || echo "")"
+  # 03 = HID (clavier, trackpad) ; 02/0a = CDC (ports série ESP32)
+  case "$cls" in 03|02|0a) continue ;; esac
+  if [ -d "$dev" ] && grep -qsE '^(03|02|0a)' "$dev"/*/bInterfaceClass 2>/dev/null; then
+    continue
+  fi
+  [ -w "$d" ] && echo auto > "$d" 2>/dev/null
+done
+exit 0
+TUNE
+
+run systemctl daemon-reload
+run systemctl enable ghostboard-power.service >/dev/null 2>&1 \
+  && good "réglage d'énergie : oneshot au démarrage, zéro démon résident"

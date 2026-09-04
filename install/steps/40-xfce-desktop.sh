@@ -9,12 +9,16 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 need_root
-has_stamp 00-preflight || die "lance d'abord l'étape 00-preflight"
+require_step 00-preflight
 apt_refresh
 
+# Pas de xserver-xorg-video-intel : le DDX « intel » est abandonné et, sur
+# Alder Lake-N, plus lent et plus fragile que le pilote `modesetting` + glamor
+# que 20-display-800x480.sh demande explicitement. L'installer ne ferait
+# qu'ajouter un pilote à sonder au démarrage de X.
 step "Serveur X et bureau"
 apt_install \
-  xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-video-intel \
+  xserver-xorg-core xserver-xorg-input-libinput \
   x11-utils x11-xserver-utils xinit dbus-x11 \
   xfwm4 xfce4-session xfdesktop4 xfce4-panel xfce4-settings \
   xfce4-terminal xfce4-appfinder xfce4-screenshooter \

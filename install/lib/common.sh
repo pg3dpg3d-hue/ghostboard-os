@@ -79,6 +79,22 @@ has_stamp()   { [[ -f "$(stamp_path "$1")" ]]; }
 set_stamp()   { mkdir -p "$GHOSTBOARD_STAMPS"; date -Is > "$(stamp_path "$1")"; }
 clear_stamp() { rm -f "$(stamp_path "$1")"; }
 
+# ---- prérequis entre étapes ------------------------------------------------
+# En exécution réelle, une étape sensible refuse de démarrer sans son prérequis.
+# En mode à blanc, elle se contente de le SIGNALER : sinon `--dry-run` ne peut
+# pas montrer le plan complet sur une machine neuve, ce qui est précisément le
+# moment où on veut le lire.
+require_step() { # nom_étape raison
+  local step="$1" why="${2:-}"
+  has_stamp "$step" && return 0
+  if [[ "$DRY_RUN" == "1" ]]; then
+    warn "[à blanc] prérequis non satisfait : $step${why:+ ($why)}"
+    return 0
+  fi
+  die "lance d'abord : sudo ./install/ghostboard-install.sh --step $step${why:+
+  ($why)}"
+}
+
 # ---- paquets ---------------------------------------------------------------
 apt_install() {
   local missing=()
