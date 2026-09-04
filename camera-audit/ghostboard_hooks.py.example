@@ -1,0 +1,67 @@
+"""
+ghostboard_hooks.py — CÂBLAGE de ton auditkit vers la TUI GHOSTBOARD.
+
+  Copie ce fichier en `ghostboard_hooks.py` (sans .example), à côté de
+  camera_audit.py, et remplis les quatre fonctions ci-dessous en appelant TON
+  code auditkit. Le pont (ghostboard/bridge.py) le détecte automatiquement et
+  cesse alors d'afficher le bandeau « DEMO ».
+
+Aucune logique de scan à réécrire ici : ces fonctions APPELLENT auditkit.
+Tu peux n'implémenter que ce dont tu as besoin — chaque hook manquant a un
+repli raisonnable (périmètre vide = tout refusé, pas de dernier run, rapport
+HTML minimal de GHOSTBOARD).
+"""
+from __future__ import annotations
+
+
+def load_scope() -> list[str]:
+    """Le périmètre autorisé : liste de CIDR et/ou d'adresses/hôtes.
+
+    Renvoie la MÊME source de vérité que la barrière de périmètre d'auditkit —
+    typiquement lue depuis ta config YAML. Exemple :
+
+        import auditkit
+        cfg = auditkit.load_config("config.yaml")
+        return cfg.scope            # ["192.168.1.0/24", "10.0.0.5"]
+    """
+    raise NotImplementedError
+
+
+def iter_findings(targets: list[str], emit) -> None:
+    """Lance les 6 modules sur `targets` et émet des événements au fil de l'eau.
+
+    `emit` accepte soit un objet Finding d'auditkit (le pont le normalise), soit
+    un Event du pont pour signaler l'avancement des modules :
+
+        from ghostboard.bridge import Event
+        for key in ("discovery","rtsp","onvif","snapshots","creds","cve"):
+            emit(Event("module_start", module=key))
+            for finding in auditkit.run_module(key, targets):
+                emit(finding)                    # Finding brut : normalisé
+            emit(Event("module_done", module=key))
+        emit(Event("done"))
+
+    NE réimplémente PAS le scan : appelle les fonctions d'auditkit. `targets` a
+    déjà passé la barrière de périmètre côté TUI, mais rien n'empêche de le
+    repasser par celle d'auditkit — deux portes valent mieux qu'une.
+    """
+    raise NotImplementedError
+
+
+def load_last_findings() -> list:
+    """Constats du dernier run (objets Finding d'auditkit), ou []. Facultatif :
+    permet à la TUI d'afficher un rapport sans relancer un scan."""
+    return []
+
+
+def generate_report(findings: list, out_path) -> str:
+    """(Ré)génère le rapport HTML complet d'auditkit et renvoie son chemin.
+
+        import auditkit
+        return auditkit.render_report(findings, out_path)
+
+    Si non implémenté, la TUI produit un rapport HTML minimal aux couleurs
+    GHOSTBOARD (repli). `findings` sont des objets d'affichage GhostFinding ;
+    si ton générateur veut tes Finding d'origine, ignore l'argument et relis
+    ton dernier run."""
+    raise NotImplementedError

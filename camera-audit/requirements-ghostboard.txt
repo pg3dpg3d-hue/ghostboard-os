@@ -1,0 +1,3 @@
+# GHOSTBOARD OS — dépendances de la couche d'intégration RECON (la TUI).
+# Séparé de requirements.txt (celui d'auditkit) pour ne pas mélanger les deux.
+textual==8.2.8

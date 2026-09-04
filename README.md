@@ -388,10 +388,12 @@ desktop/
 boot-animation/             index.html, boot.js, vendor + font fetchers
 mcp-computer-use/server.js  the MCP server (no dependencies)
 tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-run,
-                            ghost-theme,
+                            ghost-recon (RECON module launcher), ghost-theme,
                             ghost-status, ghost-claude, ghost-browser,
                             ghost-boot-splash, ghostboard-session,
                             build-boot-preview.py
+camera-audit/               RECON module — Textual TUI wrapping the auditkit
+                            camera scanner (bridge, theme, scope, report server)
 install/                    orchestrator, lib/common.sh, steps/
 tests/                      test-mcp.js, test-bruce.sh
 ```
@@ -449,9 +451,21 @@ bash tests/run-all.sh
 | `tests/test-bruce.sh` | Board detection against a synthetic sysfs tree — CP210x, CH340, native ESP32 USB, access errors |
 | `tests/test-mcp.js` | MCP handshake, tool catalogue, and `screenshot`/`click`/`type`/`key` executing against a real X server |
 | `tests/test-perf.sh` | `ghost-perf` structure and coverage, the per-process memory breakdown, and a regression lock on the process-detection false positive |
+| `camera-audit/tests/test_units.py` | RECON module — scope barrier, Finding normalisation, demo backend, report (no deps) |
 | `tests/test-desktop.js` | Drives the generated demo desktop in a real browser — terminal, simulated serial console, palette ranking, desktop switching, window drag/minimise/close. Skips cleanly with no browser. |
 
 `run-all.sh` also asserts that `--dry-run` leaves `/etc/fstab` untouched.
+
+## RECON · Camera Audit
+
+An optional security module lives in [`camera-audit/`](camera-audit/): a Textual
+TUI, sized for the 4-inch panel and driven entirely from the keyboard, that
+wraps the `auditkit` camera-surveillance scanner (nmap → RTSP/Cameradar → ONVIF
+→ snapshots → default creds → CVE cross-ref). It reuses `auditkit`'s findings
+and scan logic through a thin adapter, themes itself from the same palette, and
+serves its HTML report over Tailscale. It enforces the authorized-scope
+perimeter as a second barrier before any packet is sent. See
+[camera-audit/README.md](camera-audit/README.md) → *Intégration deck*.
 
 ## Recovery
 

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=RECON · Camera Audit
+Comment=Camera surveillance security audit — nmap, RTSP, ONVIF, default creds, CVE
+Exec=xfce4-terminal -T "RECON · Camera Audit" -e ghost-recon
+Icon=camera-web
+Terminal=false
+Categories=System;Security;Network;
+Keywords=recon;camera;audit;rtsp;onvif;nmap;cameradar;security;
+StartupNotify=false

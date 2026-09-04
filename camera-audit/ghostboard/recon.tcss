@@ -1,0 +1,135 @@
+/* ==========================================================================
+   GHOSTBOARD OS — RECON › Camera Audit — feuille de style Textual.
+   Les $gb-* sont injectées par App.get_css_variables() depuis la palette du
+   système (theme.py). AUCUNE couleur en dur ici : changer un hex dans
+   brand/palette.toml re-thème ce module.
+   Cible : ~53 colonnes sur la dalle 4 pouces. Sobre, monospace, pas de halo.
+   ========================================================================== */
+
+Screen {
+    background: $gb-bg;
+    color: $gb-text;
+    layout: vertical;
+    /* Scrollbars discrètes, aux couleurs de la palette : le bleu par défaut de
+       Textual jure avec le violet spectral de la marque. */
+    scrollbar-background: $gb-bg;
+    scrollbar-background-hover: $gb-bg;
+    scrollbar-background-active: $gb-bg;
+    scrollbar-color: $gb-sep;
+    scrollbar-color-hover: $gb-accent;
+    scrollbar-color-active: $gb-accent;
+    scrollbar-size: 1 1;
+}
+
+/* ---- barre de titre commune -------------------------------------------- */
+#topbar {
+    height: 1;
+    background: $gb-panel;
+    color: $gb-dim;
+    padding: 0 1;
+}
+#topbar .brand { color: $gb-accent; text-style: bold; }
+#topbar .demo { color: $gb-input; text-style: bold; }
+
+Footer { background: $gb-panel; }
+Footer > .footer--key { color: $gb-accent; }
+
+/* ---- accueil ------------------------------------------------------------ */
+#banner {
+    color: $gb-accent;
+    text-style: bold;
+    height: auto;
+    content-align: center top;
+    padding: 1 0 0 0;
+}
+#tagline {
+    color: $gb-dim;
+    text-align: center;
+    height: 1;
+}
+.card {
+    border: round $gb-sep;
+    padding: 1 2;
+    margin: 1 2;
+    height: auto;
+}
+.card-title {
+    text-style: bold;
+    color: $gb-accent;
+}
+#scope-box { border: round $gb-sev-high; }
+#scope-box .card-title { color: $gb-sev-high; }
+.scope-line { color: $gb-text; }
+.warn { color: $gb-input; }
+.dim { color: $gb-dim; }
+
+/* ---- édition des cibles ------------------------------------------------- */
+#targets-input {
+    border: tall $gb-sep;
+    background: $gb-panel;
+    color: $gb-input;
+    height: 3;
+    margin: 0 2;
+}
+#targets-input:focus { border: tall $gb-accent; }
+#target-help { color: $gb-dim; padding: 0 2; height: auto; }
+.oos { color: $gb-input; }   /* hors périmètre */
+.inside { color: $gb-ok; }
+
+/* ---- vue live des modules ----------------------------------------------- */
+#modrail { height: auto; padding: 1 2; }
+.mod {
+    height: 1;
+    color: $gb-dim;
+}
+.mod-pending .marker { color: $gb-dim; }
+.mod-active { color: $gb-text; }
+.mod-active .marker { color: $gb-accent; text-style: bold; }
+.mod-done .marker { color: $gb-ok; }
+#run-log {
+    border: round $gb-sep;
+    height: 1fr;
+    margin: 0 2 1 2;
+    background: $gb-bg;
+    color: $gb-dim;
+}
+#run-count { color: $gb-text; padding: 0 2; height: 1; }
+
+/* ---- liste des constats ------------------------------------------------- */
+#findings {
+    height: 1fr;
+    background: $gb-bg;
+    border: none;
+}
+/* DataTable : en-tête et curseur aux couleurs de la marque */
+DataTable > .datatable--header {
+    background: $gb-panel;
+    color: $gb-dim;
+    text-style: none;
+}
+DataTable > .datatable--cursor {
+    background: $gb-accent;
+    color: $gb-bg;
+}
+DataTable > .datatable--hover { background: $gb-panel; }
+
+#detail {
+    height: auto;
+    max-height: 40%;
+    border: round $gb-sep;
+    background: $gb-panel;
+    padding: 1 2;
+    margin: 0 1 1 1;
+}
+#detail .d-title { text-style: bold; color: $gb-text; }
+#detail .d-meta { color: $gb-dim; }
+#detail .d-cve { color: $gb-sev-high; }
+#detail .d-body { color: $gb-text; }
+#detail .d-ev { color: $gb-dim; }
+
+.sev-critical { color: $gb-sev-critical; text-style: bold; }
+.sev-high { color: $gb-sev-high; text-style: bold; }
+.sev-medium { color: $gb-sev-medium; }
+.sev-info { color: $gb-dim; }
+
+#summary { height: 1; background: $gb-panel; color: $gb-dim; padding: 0 1; }

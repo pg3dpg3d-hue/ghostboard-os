@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# GHOSTBOARD OS — lanceur de la TUI RECON › Camera Audit.
+#
+# Ouvre la TUI dans le venv du module. Cherche le venv, retombe sur python3
+# système si absent (la TUI démarre alors si textual y est installé, sinon
+# affiche quoi lancer). Le module n'a besoin d'aucune variable : il trouve la
+# palette du système tout seul (voir ghostboard/theme.py).
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_PY="$HERE/.venv/bin/python"
+
+if [[ -x "$VENV_PY" ]]; then
+  PY="$VENV_PY"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="python3"
+  echo "note : venv absent — lance d'abord $HERE/install.sh" >&2
+else
+  echo "python3 introuvable" >&2; exit 1
+fi
+
+# Le paquet ghostboard est sous $HERE ; on l'expose sans l'installer.
+cd "$HERE"
+exec env PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m ghostboard "$@"
