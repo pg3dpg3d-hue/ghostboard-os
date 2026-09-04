@@ -237,6 +237,20 @@ GHOSTBOARD_BOOT=0 ghostboard-session       # skip it once
 To turn it off for good: `boot.enabled = false` in `brand/palette.toml`, then
 `sudo ghost-theme apply`.
 
+### Presentation pages
+
+```bash
+python3 tools/build-os-preview.py   build/os-preview.html   # the OS and its features
+python3 tools/build-boot-preview.py build/boot-bench.html   # the ignition sequence
+```
+
+Both are single self-contained pages built **from the generated theme**, not
+hand-drawn: colours, geometry, wallpaper, start-button icon and the window-button
+PNGs all come out of `build/theme/`. The OS page reproduces the desktop at a real
+800 x 480 — floating taskbar, a start menu that filters the actual `.desktop`
+launchers, windows carrying the real title-bar buttons. It is a faithful
+reproduction of the theme values, **not a screenshot**: XFCE has never run here.
+
 ### Standalone bench
 
 ```bash

@@ -56,6 +56,26 @@ grep -q '#A855F7' "$out/themes/GhostboardSpectral/gtk-3.0/gtk.css"
 ck "accent de la palette présent dans le CSS généré" $?
 rm -rf "$out"
 
+echo "Pages générées depuis le thème"
+gen="$(mktemp -d)"
+for tool in build-boot-preview build-os-preview; do
+  python3 "tools/$tool.py" "$gen/$tool.html" >/dev/null 2>&1
+  ck "$tool.py s'exécute" $?
+  # Un balisage déséquilibré ne se voit pas à l'oeil : une balise non fermée
+  # avale silencieusement le reste de la page — c'est arrivé deux fois ici.
+  python3 -c '
+import sys
+h = open(sys.argv[1], encoding="utf-8").read()
+assert h.count("<div") == h.count("</div>"), (
+    f"{h.count(chr(60)+chr(100)+chr(105)+chr(118))} ouvertures pour "
+    f"{h.count(chr(60)+chr(47)+chr(100)+chr(105)+chr(118)+chr(62))} fermetures")
+assert "<title>" in h[:8192], "titre absent des 8 premiers Ko"
+assert len(h) > 20000, "page anormalement courte"
+' "$gen/$tool.html" 2>/dev/null
+  ck "$tool : balisage équilibré, titre présent" $?
+done
+rm -rf "$gen"
+
 echo "Syntaxe"
 for f in $(find . -name '*.sh' -not -path './build/*' -not -path './.git/*'); do
   bash -n "$f" 2>/dev/null; ck "shell $f" $?
