@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  GHOSTBOARD OS — application du thème
+# ============================================================================
+#     ghost-theme apply     régénère TOUT le thème depuis brand/palette.toml
+#     ghost-theme check     vérifie contrastes et cohérence, sans rien écrire
+#     ghost-theme reload    recharge le thème dans la session en cours
+#
+#  Boucle de travail : éditer un hex dans brand/palette.toml, lancer
+#  `ghost-theme apply`, se déconnecter/reconnecter. Aucune couleur n'est
+#  écrite ailleurs, donc rien ne peut rester à l'ancienne teinte.
+# ============================================================================
+set -euo pipefail
+REPO="${GHOSTBOARD_REPO:-/opt/ghostboard-os}"
+SHARE="${GHOSTBOARD_SHARE:-/usr/share/ghostboard}"
+RENDER="$REPO/theme/render-theme.py"
+[[ -f "$RENDER" ]] || { echo "dépôt GHOSTBOARD introuvable : $REPO" >&2; exit 1; }
+
+cmd="${1:-apply}"
+case "$cmd" in
+  check)
+    exec python3 "$RENDER" --check
+    ;;
+  apply)
+    # --check d'abord : un thème illisible ne doit pas pouvoir être installé.
+    python3 "$RENDER" --check
+    python3 "$RENDER" --install --share-dir "$SHARE" --home "$HOME"
+
+    # Configuration XFCE : recopiée seulement si absente, pour ne pas écraser
+    # les réglages faits à la main après l'installation.
+    xdg="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+    mkdir -p "$xdg" "$HOME/.config/xfce4/panel" "$HOME/.local/share/applications"
+    for f in "$REPO"/desktop/config/*.xml; do
+      [[ -f "$xdg/$(basename "$f")" ]] || install -m 0644 "$f" "$xdg/"
+    done
+    [[ -f "$HOME/.config/xfce4/panel/whiskermenu-1.rc" ]] || \
+      install -m 0644 "$REPO/desktop/config/whiskermenu-1.rc" "$HOME/.config/xfce4/panel/"
+    install -m 0644 "$REPO"/desktop/launchers/*.desktop "$HOME/.local/share/applications/"
+    command -v update-desktop-database >/dev/null && \
+      update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    command -v gtk-update-icon-cache >/dev/null && \
+      gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+
+    # L'animation de boot lit la même palette que le reste : on la resynchronise.
+    if [[ -d "$SHARE/boot-animation" ]]; then
+      install -m 0644 "$SHARE/palette.js" "$SHARE/boot-animation/palette.js"
+    fi
+    echo
+    echo "Thème appliqué. Déconnecte-toi puis reconnecte-toi pour tout recharger,"
+    echo "ou lance : ghost-theme reload"
+    ;;
+  reload)
+    # Rechargement à chaud, sans fermer la session. xfdesktop et le panneau
+    # relisent leur configuration ; GTK relit le thème via xfsettingsd.
+    [[ -n "${DISPLAY:-}" ]] || { echo "pas de session graphique" >&2; exit 1; }
+    xfconf-query -c xsettings -p /Net/ThemeName -s "GhostboardSpectral" 2>/dev/null || true
+    xfconf-query -c xfwm4 -p /general/theme -s "GhostboardSpectral" 2>/dev/null || true
+    [[ -f "$HOME/.Xresources" ]] && xrdb -merge "$HOME/.Xresources"
+    xfce4-panel -r >/dev/null 2>&1 || true
+    xfdesktop --reload >/dev/null 2>&1 || true
+    echo "Thème rechargé."
+    ;;
+  *)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

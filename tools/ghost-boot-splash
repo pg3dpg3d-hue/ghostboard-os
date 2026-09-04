@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  GHOSTBOARD OS — lanceur de l'animation d'allumage
+# ============================================================================
+#  Affiche l'animation WebGL en plein écran, attend qu'elle finisse, tue la
+#  fenêtre. Bloquant : c'est voulu, la session s'ouvre juste après.
+#
+#  Ce script ne fait JAMAIS échouer l'ouverture de session. Chromium absent,
+#  WebGL cassé, X pas prêt, animation désactivée : dans tous les cas il sort
+#  en 0 et le bureau démarre.
+#
+#  La durée vient de brand/palette.toml via palette.json. window.close() n'est
+#  pas fiable (Chromium refuse de fermer une fenêtre qu'il n'a pas ouverte en
+#  script) : c'est CE script qui tue le processus, pas la page.
+# ============================================================================
+set -uo pipefail
+
+SHARE="${GHOSTBOARD_SHARE:-/usr/share/ghostboard}"
+SPLASH_DIR="${GHOSTBOARD_SPLASH_DIR:-$SHARE/boot-animation}"
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ghostboard"
+LOG="$LOG_DIR/boot-splash.log"
+mkdir -p "$LOG_DIR"
+
+log() { printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG"; }
+
+bail() { log "ignoré : $*"; exit 0; }
+
+[[ "${GHOSTBOARD_BOOT:-1}" == "0" ]] && bail "désactivé par GHOSTBOARD_BOOT=0"
+[[ -n "${DISPLAY:-}" ]] || bail "pas de DISPLAY"
+[[ -f "$SPLASH_DIR/index.html" ]] || bail "animation absente ($SPLASH_DIR)"
+
+# ---- paramètres issus de la palette ---------------------------------------
+read_palette() {
+  python3 - "$SHARE/palette.json" <<'PY' 2>/dev/null
+import json, sys
+try:
+    b = json.load(open(sys.argv[1]))["boot"]
+except Exception:
+    b = {}
+print(b.get("enabled", True) and 1 or 0)
+print(int(b.get("converge_ms", 950)) + int(b.get("hold_ms", 250))
+      + int(b.get("fadeout_ms", 200)))
+print(int(b.get("timeout_ms", 4000)))
+PY
+}
+mapfile -t P < <(read_palette)
+ENABLED="${P[0]:-1}"; DURATION_MS="${P[1]:-1400}"; TIMEOUT_MS="${P[2]:-4000}"
+[[ "$ENABLED" == "1" ]] || bail "boot.enabled = false dans la palette"
+
+# ---- navigateur ------------------------------------------------------------
+BROWSER=""
+for c in chromium chromium-browser google-chrome-stable google-chrome; do
+  if command -v "$c" >/dev/null 2>&1; then BROWSER="$(command -v "$c")"; break; fi
+done
+[[ -n "$BROWSER" ]] || bail "aucun navigateur Chromium trouvé"
+
+# Profil jetable en RAM : aucune écriture sur le NVMe pour 1,4 s d'affichage.
+PROFILE="$(mktemp -d -p "${XDG_RUNTIME_DIR:-/tmp}" ghostboard-splash.XXXXXX)"
+cleanup() { rm -rf "$PROFILE"; }
+trap cleanup EXIT
+
+SCREEN_W="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["layout"]["screen_w"])' "$SHARE/palette.json" 2>/dev/null || echo 800)"
+SCREEN_H="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["layout"]["screen_h"])' "$SHARE/palette.json" 2>/dev/null || echo 480)"
+
+log "démarrage : $BROWSER, ${DURATION_MS}ms, ${SCREEN_W}x${SCREEN_H}"
+
+# --allow-file-access-from-files : three.js est un module ES chargé depuis
+#   file://, que Chromium bloque sinon (origine opaque). La page est locale et
+#   ne charge rien d'autre — le drapeau est cantonné à ce profil jetable.
+# --use-gl=egl : chemin GPU direct sur l'iGPU Intel, sans passer par ANGLE.
+"$BROWSER" \
+  --user-data-dir="$PROFILE" \
+  --app="file://$SPLASH_DIR/index.html" \
+  --window-size="$SCREEN_W,$SCREEN_H" \
+  --window-position=0,0 \
+  --kiosk \
+  --start-fullscreen \
+  --allow-file-access-from-files \
+  --use-gl=egl \
+  --no-first-run --no-default-browser-check --no-service-autorun \
+  --disable-extensions --disable-component-update --disable-sync \
+  --disable-background-networking --disable-background-timer-throttling \
+  --disable-features=Translate,MediaRouter,OptimizationHints,DialMediaRouteProvider \
+  --disable-breakpad --disable-crash-reporter --disable-logging \
+  --password-store=basic --use-mock-keychain \
+  --autoplay-policy=no-user-gesture-required \
+  --hide-scrollbars \
+  >>"$LOG" 2>&1 &
+PID=$!
+
+# ---- attente puis extinction ----------------------------------------------
+# Marge : démarrage de Chromium + parse de three.js. Mesuré ~0,35 s en
+# logiciel, moins sur iGPU. Le garde-fou de la palette borne le pire cas.
+MARGIN_MS=700
+WAIT_MS=$(( DURATION_MS + MARGIN_MS ))
+(( WAIT_MS > TIMEOUT_MS )) && WAIT_MS="$TIMEOUT_MS"
+sleep "$(awk -v ms="$WAIT_MS" 'BEGIN{printf "%.3f", ms/1000}')"
+
+if kill -0 "$PID" 2>/dev/null; then
+  kill -TERM "$PID" 2>/dev/null
+  # Laisser Chromium fermer proprement, puis forcer.
+  for _ in 1 2 3 4 5; do
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL "$PID" 2>/dev/null
+fi
+wait "$PID" 2>/dev/null
+log "terminé"
+exit 0

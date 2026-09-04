@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GHOSTBOARD</title>
+<!--
+  GHOSTBOARD OS — animation d'allumage, en cinq actes.
+
+    1. AMORÇAGE   une ligne de balayage descend, les particules naissent
+    2. RECHERCHE  dérive turbulente
+    3. VERROU     les lettres se posent une par une
+    4. ASSISE     le filet se trace, le slogan s'écrit
+    5. DÉCHARGE   onde de choc, extinction, destruction du contexte WebGL
+
+  Après ça, plus une seule boucle GPU ne tourne sur la machine.
+
+  Repli, dans l'ordre :
+    1. prefers-reduced-motion         -> logotype statique
+    2. WebGL indisponible ou en échec -> logotype statique
+    3. dépassement du garde-fou       -> le lanceur tue la fenêtre
+  Dans les trois cas la session s'ouvre normalement.
+-->
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: #000; cursor: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* ---- Acte 1 : la ligne de balayage.
+         En DOM plutôt qu'en WebGL : une ligne d'un pixel doit être franche,
+         et une particule additive ne l'est jamais. ---- */
+  #scanline {
+    position: fixed; left: 0; top: 0; width: 100%; height: 2px;
+    opacity: 0; pointer-events: none; will-change: transform;
+  }
+
+  /* ---- Acte 2 : relevé technique. Monospace, atténué, en bas à gauche.
+         C'est de la donnée : elle a droit au monospace, pas à l'accent. ---- */
+  #readout {
+    position: fixed; left: 18px; bottom: 16px;
+    font-size: 11px; line-height: 1.6; letter-spacing: 2.5px;
+    opacity: 0; pointer-events: none;
+  }
+  #readout.on { opacity: 0.85; transition: opacity 180ms linear; }
+  #readout .line { white-space: nowrap; }
+
+  /* ---- Acte 4 : le slogan, écrit caractère par caractère ---- */
+  #tagline {
+    position: fixed; left: 0; right: 0; text-align: center;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px; letter-spacing: 4.5px;
+    opacity: 0; pointer-events: none; white-space: pre;
+  }
+  #tagline.on { opacity: 1; }
+
+  /* ---- Repli statique : DOM, pas WebGL. Coût nul. ---- */
+  #fallback {
+    position: fixed; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    font-family: "Martian Mono", "IBM Plex Mono", monospace;
+  }
+  #fallback.on { display: flex; }
+  #fallback .wordmark { font-size: 40px; font-weight: 600; letter-spacing: 10px; }
+</style>
+
+<div id="stage"></div>
+<div id="scanline"></div>
+<div id="readout"></div>
+<div id="fallback"><div class="wordmark">GHOSTBOARD</div></div>
+<div id="tagline"></div>
+
+<!-- Palette injectée par le thème (généré depuis brand/palette.toml).
+     Script classique : fetch() est bloqué sur file://. -->
+<script src="palette.js"></script>
+<script type="module" src="boot.js"></script>
+<script>
+  // Si le module ES échoue (WebGL absent, fichier manquant, erreur de parse),
+  // on n'a pas le droit de bloquer l'ouverture de session : logotype statique,
+  // et le lanceur reprend la main.
+  window.addEventListener('error', function onFail() {
+    if (!window.__ghostboardStarted) {
+      document.getElementById('fallback').classList.add('on');
+      var t = document.getElementById('tagline');
+      t.textContent = 'CUSTOM HARDWARE. READY TO EXPLORE.';
+      t.classList.add('on');
+    }
+  });
+</script>

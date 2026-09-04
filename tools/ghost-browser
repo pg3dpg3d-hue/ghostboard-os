@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# GHOSTBOARD OS — navigateur, réglé pour la dalle 800x480 et la batterie.
+#
+# Chromium par défaut ouvre une fenêtre plus grande que l'écran et lance une
+# demi-douzaine de services d'arrière-plan. Ici : fenêtre à la taille exacte
+# de la dalle, télémétrie et pré-chargement coupés.
+set -uo pipefail
+SHARE="${GHOSTBOARD_SHARE:-/usr/share/ghostboard}"
+W=800; H=480
+if [[ -f "$SHARE/palette.json" ]]; then
+  read -r W H < <(python3 -c '
+import json,sys
+l=json.load(open(sys.argv[1]))["layout"]; print(l["screen_w"], l["screen_h"])' \
+    "$SHARE/palette.json" 2>/dev/null) || { W=800; H=480; }
+fi
+
+BROWSER=""
+for c in chromium chromium-browser google-chrome-stable; do
+  command -v "$c" >/dev/null 2>&1 && { BROWSER="$c"; break; }
+done
+[[ -n "$BROWSER" ]] || { echo "aucun navigateur Chromium installé" >&2; exit 1; }
+
+exec "$BROWSER" \
+  --window-size="$W,$H" --window-position=0,0 \
+  --no-first-run --no-default-browser-check --no-service-autorun \
+  --disable-background-networking --disable-component-update \
+  --disable-features=Translate,MediaRouter,OptimizationHints \
+  --disable-breakpad --disable-crash-reporter \
+  --password-store=basic \
+  "$@"

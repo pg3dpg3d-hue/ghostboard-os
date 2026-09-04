@@ -1,0 +1,12 @@
+{
+  "name": "ghostboard-computer-use",
+  "version": "1.0.0",
+  "description": "MCP server exposing the GHOSTBOARD deck screen to Claude Code — screenshot, click, type, key",
+  "type": "commonjs",
+  "main": "server.js",
+  "bin": { "ghostboard-computer-use": "./server.js" },
+  "engines": { "node": ">=18" },
+  "license": "MIT",
+  "private": true,
+  "//": "Aucune dependance, et c'est volontaire : le serveur demarre en ~25 ms et il n'y a rien a mettre a jour sur le deck."
+}

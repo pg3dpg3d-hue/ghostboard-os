@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  GHOSTBOARD OS — session graphique
+# ============================================================================
+#  Enveloppe autour de XFCE. Séquence :
+#     1. animation d'allumage, plein écran, bloquante (~1,4 s)
+#     2. exec startxfce4
+#
+#  Passer par une enveloppe plutôt que par ~/.config/autostart garantit que
+#  l'animation est la PREMIÈRE chose à l'écran : rien n'est dessiné dessous,
+#  donc aucun clignotement de bureau avant le logotype.
+#
+#  Filet de sécurité : la session XFCE standard reste installée et
+#  sélectionnable depuis l'écran de connexion. Si cette enveloppe casse,
+#  on se connecte en « Xfce Session » et tout fonctionne.
+# ============================================================================
+set -uo pipefail
+
+# L'animation ne doit jamais empêcher la session de démarrer : elle est
+# lancée hors du `set -e`, son code de retour est ignoré volontairement.
+if [[ -x /usr/local/bin/ghost-boot-splash ]]; then
+  /usr/local/bin/ghost-boot-splash || true
+fi
+
+[[ -f "$HOME/.Xresources" ]] && command -v xrdb >/dev/null && \
+  xrdb -merge "$HOME/.Xresources" || true
+
+exec startxfce4

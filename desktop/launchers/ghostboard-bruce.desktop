@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Bruce
+Comment=ESP32 boards running Bruce — serial console and WebUI
+Exec=xfce4-terminal -T Bruce --hold -e "ghost-bruce list"
+Icon=network-wireless
+Terminal=false
+Categories=System;HardwareSettings;
+Keywords=esp32;serial;bruce;m5stick;cyd;
+StartupNotify=false
+Actions=console;webui;
+
+[Desktop Action console]
+Name=Serial console
+Exec=xfce4-terminal -T "Bruce console" -e "ghost-bruce console"
+
+[Desktop Action webui]
+Name=Open WebUI
+Exec=ghost-bruce webui

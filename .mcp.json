@@ -1,0 +1,10 @@
+{
+  "//": "GHOSTBOARD OS — serveur MCP computer use, portée projet. L'installateur enregistre aussi une entrée en portée utilisateur (voir install/steps/70-mcp-computer-use.sh). GHOSTBOARD_MCP_DISPLAY bascule vers la session dédiée à l'agent : ghost-agent-session on",
+  "mcpServers": {
+    "ghostboard-computer-use": {
+      "command": "node",
+      "args": ["./mcp-computer-use/server.js"],
+      "env": { "GHOSTBOARD_MCP_DISPLAY": ":0" }
+    }
+  }
+}

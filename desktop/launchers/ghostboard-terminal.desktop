@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Terminal
+Comment=Shell — IBM Plex Mono, GHOSTBOARD palette
+Exec=xfce4-terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;console;command;
+StartupNotify=false

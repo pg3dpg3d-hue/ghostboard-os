@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  GHOSTBOARD OS — lanceur de Claude Code
+# ============================================================================
+#  Claude Code est le cœur du système : accès terminal + fichiers, et il
+#  orchestre le reste (dont le serveur MCP computer use).
+#
+#  MODE DÉGRADÉ : le raisonnement est dans le cloud. Sans réseau, Claude Code
+#  ne peut pas fonctionner. Ce lanceur le dit franchement AVANT d'ouvrir une
+#  session qui échouerait, et rappelle ce qui reste utilisable hors ligne.
+#  Il ne bloque jamais : on peut toujours forcer le lancement.
+# ============================================================================
+set -uo pipefail
+SHARE="${GHOSTBOARD_SHARE:-/usr/share/ghostboard}"
+[[ -f "$SHARE/palette.sh" ]] && . "$SHARE/palette.sh"
+
+c()   { [[ -t 1 ]] || { printf '%s' "$2"; return; }
+        local h="${1#\#}"
+        printf '\033[38;2;%d;%d;%dm%s\033[0m' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}" "$2"; }
+accent() { c "${GB_ACCENT:-#A855F7}" "$1"; }
+warn()   { c "${GB_INPUT:-#FF4D8D}" "$1"; }
+faint()  { c "${GB_TEXT_DIM:-#6E6880}" "$1"; }
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "$(warn 'Claude Code n'\''est pas installé.')"
+  echo "$(faint '  sudo ghostboard-install --step 60-nodejs-claude-code')"
+  exit 1
+fi
+
+# Sonde réseau : 2 s, sans DNS lent. On teste l'API réellement utilisée, pas
+# « internet » en général — un portail captif répond, l'API non.
+online=0
+if command -v curl >/dev/null 2>&1; then
+  curl -fsS --max-time 2 -o /dev/null "https://api.anthropic.com/v1/models" 2>/dev/null && online=1
+  # 401 = joignable mais non authentifié : le réseau est bon, c'est ce qu'on teste.
+  [[ "$online" -eq 0 ]] && \
+    [[ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' https://api.anthropic.com/v1/models 2>/dev/null)" =~ ^(401|403|200)$ ]] && online=1
+fi
+
+if [[ "$online" -eq 0 ]]; then
+  echo
+  echo "$(warn '  ── HORS LIGNE ─────────────────────────────────────')"
+  echo "  L'API Anthropic n'est pas joignable."
+  echo "  Le raisonnement de Claude est dans le cloud : sans réseau,"
+  echo "  Claude Code ne peut pas répondre."
+  echo
+  echo "$(faint '  Ce qui reste utilisable hors ligne :')"
+  echo "$(faint '    ghost-bruce    cartes ESP32, console série, WebUI locale')"
+  echo "$(faint '    ghost-status   état du système')"
+  echo "$(faint '    ghost-bench    mesures de performance')"
+  echo "$(faint '    terminal, éditeur, gestionnaire de fichiers : intacts')"
+  echo
+  echo "$(faint '  Réseau : nmtui  (Wi-Fi)   ou branche un câble.')"
+  echo
+  read -r -p "  Lancer Claude Code quand même ? [o/N] " reply
+  [[ "$reply" =~ ^[oOyY]$ ]] || exit 0
+else
+  echo "$(accent '  GHOSTBOARD') $(faint '— API Anthropic joignable')"
+fi
+
+exec claude "$@"

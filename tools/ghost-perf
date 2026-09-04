@@ -1,0 +1,590 @@
+#!/usr/bin/env python3
+"""
+ghost-perf — audit des optimisations de GHOSTBOARD OS sur le système VIVANT.
+
+    ghost-perf              tout, groupé par domaine
+    ghost-perf --fails      seulement ce qui cloche
+    ghost-perf --json       sortie machine
+    ghost-perf --fix        affiche les commandes de correction, ne les exécute pas
+
+Un script d'installation qui s'est exécuté ne prouve rien : un paquet peut
+réactiver un service, une mise à jour peut écraser une configuration, un
+réglage peut être écrit sans jamais prendre effet. Cet outil ne lit AUCUN
+jalon d'installation — il interroge l'état réel du système.
+
+Chaque contrôle dit trois choses : ce qui est attendu, ce qui est constaté,
+et la commande exacte qui corrige.
+
+Codes de sortie : 0 tout conforme · 1 au moins un écart · 2 erreur interne.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SHARE = Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard"))
+REPO = os.environ.get("GHOSTBOARD_REPO", "/opt/ghostboard-os")
+
+PASS, FAIL, SKIP = "PASS", "FAIL", "N/A"
+
+
+# ---------------------------------------------------------------------------
+#  Couleurs de la marque
+# ---------------------------------------------------------------------------
+def _ink() -> dict:
+    on = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    pal = {"accent": "#A855F7", "input": "#FF4D8D",
+           "text_dim": "#6E6880", "text": "#D6D2E0"}
+    try:
+        pal.update(json.loads((SHARE / "palette.json").read_text())["color"])
+    except Exception:
+        pass
+
+    def fg(h: str) -> str:
+        if not on:
+            return ""
+        h = h.lstrip("#")
+        return f"\033[38;2;{int(h[0:2],16)};{int(h[2:4],16)};{int(h[4:6],16)}m"
+
+    return {"ok": fg(pal["accent"]), "ko": fg(pal["input"]),
+            "dim": fg(pal["text_dim"]), "txt": fg(pal["text"]),
+            "off": "\033[0m" if on else ""}
+
+
+INK = _ink()
+
+
+# ---------------------------------------------------------------------------
+#  Sondes système
+# ---------------------------------------------------------------------------
+def sh(*cmd, timeout: int = 15) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout).stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+def read(path: str) -> str:
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def unit_state(unit: str) -> str:
+    """enabled / disabled / masked / absent — l'état réel, pas le souhait."""
+    if not shutil.which("systemctl"):
+        return "absent"
+    out = sh("systemctl", "is-enabled", unit)
+    if not out:
+        return "absent"
+    return out.splitlines()[0]
+
+
+def _self_and_ancestors() -> set[int]:
+    """Notre propre chaîne de processus, à exclure de tout balayage.
+
+    Sinon le shell qui vient de taper « ghost-perf » porte dans sa ligne de
+    commande le nom des processus recherchés, et se fait détecter lui-même.
+    """
+    chain, pid = set(), os.getpid()
+    for _ in range(24):
+        if pid <= 1:
+            break
+        chain.add(pid)
+        m = re.search(r"^PPid:\s+(\d+)", read(f"/proc/{pid}/status"), re.M)
+        if not m:
+            break
+        pid = int(m.group(1))
+    return chain
+
+
+_PROCS: list[tuple[int, str, str]] | None = None
+
+
+def processes() -> list[tuple[int, str, str]]:
+    """(pid, comm, argv0) pour chaque processus vivant, lu depuis /proc.
+
+    On n'utilise PAS `pgrep -f` : il compare la ligne de commande entière, donc
+    n'importe quel shell, éditeur ou script mentionnant le nom recherché se fait
+    compter comme une occurrence du service. Un audit qui produit des faux
+    positifs ne sert à rien — on lit /proc/<pid>/comm, qui est le nom réel de
+    l'exécutable, et argv[0] pour les processus lancés via un interpréteur.
+    """
+    global _PROCS
+    if _PROCS is not None:
+        return _PROCS
+    skip = _self_and_ancestors()
+    out = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in skip:
+            continue
+        comm = read(f"/proc/{pid}/comm")
+        if not comm:
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            raw = []
+        argv0 = os.path.basename(raw[0].decode("utf-8", "replace")) if raw and raw[0] else ""
+        out.append((pid, comm, argv0))
+    _PROCS = out
+    return out
+
+
+def process_running(name: str) -> bool:
+    """Vrai si un processus PORTE ce nom — pas si un processus le mentionne."""
+    short = name[:15]   # /proc/<pid>/comm est tronqué à 15 caractères
+    return any(comm == short or argv0 == name for _, comm, argv0 in processes())
+
+
+def process_cmdlines(name: str) -> list[str]:
+    """Lignes de commande complètes des processus portant ce nom."""
+    short, found = name[:15], []
+    for pid, comm, argv0 in processes():
+        if comm != short and argv0 != name:
+            continue
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            continue
+        found.append(raw.replace(b"\0", b" ").decode("utf-8", "replace").strip())
+    return found
+
+
+def pkg_installed(pkg: str) -> bool:
+    return sh("dpkg-query", "-W", "-f=${Status}", pkg).startswith("install ok")
+
+
+def cmdline() -> str:
+    return read("/proc/cmdline")
+
+
+def rootfs_options() -> str:
+    return sh("findmnt", "-no", "OPTIONS", "/")
+
+
+def nvme_devices() -> list[str]:
+    return [p.name for p in Path("/sys/block").glob("nvme*n*")]
+
+
+# ---------------------------------------------------------------------------
+#  Contrôles
+#  (domaine, libellé, gain estimé, fonction) -> (statut, constat, correction)
+# ---------------------------------------------------------------------------
+def c_grub_timeout():
+    if _no_grub():
+        return SKIP, "pas de GRUB sur ce système", ""
+    cfg = read("/etc/default/grub.d/60-ghostboard.cfg")
+    if "GRUB_TIMEOUT=0" in cfg:
+        return PASS, "temporisation 0 s, menu caché", ""
+    live = read("/etc/default/grub")
+    m = re.search(r"^GRUB_TIMEOUT=(\d+)", live, re.M)
+    return FAIL, f"attente de {m.group(1) if m else '?'} s au démarrage", \
+challenge_fix("96-boot-chain")
+
+
+def _no_grub() -> bool:
+    return not Path("/etc/default/grub").exists() and not shutil.which("update-grub")
+
+
+def c_os_prober():
+    if _no_grub():
+        return SKIP, "pas de GRUB sur ce système", ""
+    cfg = read("/etc/default/grub.d/60-ghostboard.cfg") + read("/etc/default/grub")
+    if "GRUB_DISABLE_OS_PROBER=true" in cfg:
+        return PASS, "os-prober coupé", ""
+    return FAIL, "os-prober scanne tous les disques à chaque noyau", \
+        challenge_fix("96-boot-chain")
+
+
+def c_initramfs():
+    conf = read("/etc/initramfs-tools/conf.d/ghostboard.conf")
+    imgs = sorted(Path("/boot").glob("initrd.img-*"))
+    size_mb = (imgs[-1].stat().st_size / 1048576) if imgs else 0
+    detail = f"{size_mb:.0f} Mo" if imgs else "aucun initramfs trouvé"
+    if "MODULES=dep" in conf:
+        return PASS, f"réduit aux modules utilisés ({detail})", ""
+    if not imgs:
+        return SKIP, detail, ""
+    return FAIL, f"initramfs « most » ({detail})", challenge_fix("96-boot-chain")
+
+
+def c_quiet_boot():
+    if _no_grub():
+        return SKIP, "ligne de commande noyau non modifiable ici", ""
+    cl = cmdline()
+    if "loglevel=3" in cl or "quiet" in cl:
+        return PASS, "console noyau silencieuse", ""
+    return FAIL, "le noyau écrit tout sur la console avant X", \
+        challenge_fix("96-boot-chain")
+
+
+def c_session_mode():
+    override = Path("/etc/systemd/system/getty@tty1.service.d/"
+                    "ghostboard-autologin.conf").exists()
+    ldm_auto = Path("/etc/lightdm/lightdm.conf.d/"
+                    "70-ghostboard-autologin.conf").exists()
+    ldm_on = unit_state("lightdm") == "enabled"
+    if override and not ldm_on:
+        return PASS, "session directe — aucun gestionnaire de session", ""
+    if ldm_on and ldm_auto:
+        return FAIL, "LightDM en connexion automatique (~1 s et ~40 Mo de plus " \
+                     "que la session directe)", "sudo ghost-session-mode direct"
+    if ldm_on:
+        return FAIL, "LightDM avec mot de passe (le plus lent des trois modes)", \
+            "sudo ghost-session-mode direct"
+    if unit_state("lightdm") == "absent" and not Path("/usr/sbin/lightdm").exists():
+        return SKIP, "aucun gestionnaire de session installé", ""
+    return FAIL, "mode d'ouverture de session indéterminé", \
+        "sudo ghost-session-mode direct"
+
+
+def c_tmpfs():
+    if "tmpfs" in sh("findmnt", "-no", "FSTYPE", "/tmp"):
+        return PASS, "/tmp en RAM", ""
+    return FAIL, "/tmp écrit sur le NVMe", "sudo systemctl enable --now tmp.mount"
+
+
+def c_noatime():
+    opts = rootfs_options()
+    if "noatime" in opts:
+        return PASS, "noatime actif sur /", ""
+    return FAIL, f"chaque lecture écrit un horodatage ({opts or 'inconnu'})", \
+        "éditer /etc/fstab, ajouter noatime sur /, puis redémarrer"
+
+
+def c_nvme_sched():
+    devs = nvme_devices()
+    if not devs:
+        return SKIP, "aucun NVMe sur cette machine", ""
+    bad = []
+    for d in devs:
+        sched = read(f"/sys/block/{d}/queue/scheduler")
+        if "[none]" not in sched:
+            bad.append(f"{d}: {sched}")
+    if bad:
+        return FAIL, "; ".join(bad), "sudo udevadm trigger --subsystem-match=block"
+    return PASS, f"none sur {', '.join(devs)}", ""
+
+
+def c_governor():
+    govs = list(Path("/sys/devices/system/cpu").glob("cpu*/cpufreq/scaling_governor"))
+    if not govs:
+        return SKIP, "pas de cpufreq exposé (machine virtuelle ?)", ""
+    vals = {read(str(g)) for g in govs}
+    if vals == {"powersave"}:
+        return PASS, "powersave (algorithme adaptatif d'intel_pstate)", ""
+    return FAIL, f"gouverneur : {', '.join(sorted(vals))}", \
+        "sudo systemctl start ghostboard-power.service"
+
+
+def c_epp():
+    epps = list(Path("/sys/devices/system/cpu").glob(
+        "cpu*/cpufreq/energy_performance_preference"))
+    if not epps:
+        return SKIP, "EPP non exposé par ce processeur", ""
+    vals = {read(str(e)) for e in epps}
+    if vals <= {"balance_power", "power"}:
+        return PASS, f"EPP : {', '.join(sorted(vals))}", ""
+    return FAIL, f"EPP : {', '.join(sorted(vals))}", \
+        "sudo systemctl start ghostboard-power.service"
+
+
+def c_power_oneshot():
+    if pkg_installed("power-profiles-daemon") or pkg_installed("tlp"):
+        return FAIL, "un démon d'énergie est installé (oneshot suffit)", \
+            "sudo apt purge power-profiles-daemon tlp"
+    st = unit_state("ghostboard-power.service")
+    if st == "enabled":
+        return PASS, "oneshot au démarrage, aucun démon résident", ""
+    if st == "absent":
+        return FAIL, "réglage d'énergie non installé", \
+            challenge_fix("10-base-system")
+    return FAIL, f"ghostboard-power.service : {st}", \
+        "sudo systemctl enable --now ghostboard-power.service"
+
+
+def c_input_not_suspended():
+    """La mise en veille USB ne doit JAMAIS toucher le clavier ni les ponts
+    série : c'est l'optimisation d'énergie qui casse l'appareil."""
+    offenders = []
+    for ctrl in Path("/sys/bus/usb/devices").glob("*/power/control"):
+        dev = ctrl.parent.parent
+        cls = read(str(dev / "bDeviceClass"))
+        iface = {read(str(p)) for p in dev.glob("*/bInterfaceClass")}
+        risky = cls in ("03", "02", "0a") or iface & {"03", "02", "0a"}
+        if risky and read(str(ctrl)) == "auto":
+            offenders.append(dev.name)
+    if not Path("/sys/bus/usb/devices").exists():
+        return SKIP, "aucun bus USB exposé", ""
+    if offenders:
+        return FAIL, f"veille automatique active sur {', '.join(offenders)} " \
+                     f"(clavier ou port série)", \
+            "sudo systemctl restart ghostboard-power.service"
+    return PASS, "clavier et ponts série exclus de la veille USB", ""
+
+
+def _service_check(units: list[str], label: str, fix: str):
+    still = [u for u in units if unit_state(u) == "enabled"]
+    if not still:
+        return PASS, label, ""
+    return FAIL, "encore actif : " + ", ".join(still), fix
+
+
+def c_services_disabled():
+    return _service_check(
+        ["ModemManager.service", "bluetooth.service", "cups.service",
+         "avahi-daemon.service", "packagekit.service", "apt-daily.timer",
+         "apt-daily-upgrade.timer", "NetworkManager-wait-online.service"],
+        "modem, Bluetooth, impression, Avahi, PackageKit, apt quotidien : coupés",
+        challenge_fix("95-perf-tuning"))
+
+
+def c_failed_units():
+    out = sh("systemctl", "list-units", "--state=failed", "--no-legend", "--no-pager")
+    failed = [l.split()[0] for l in out.splitlines() if l.strip()]
+    if not failed:
+        return PASS, "aucune unité en échec", ""
+    return FAIL, ", ".join(failed), "systemctl status <unité> pour la cause"
+
+
+def c_at_spi():
+    if process_running("at-spi2-registryd") or process_running("at-spi-bus-launcher"):
+        return FAIL, "pont d'accessibilité en cours d'exécution (~20 Mo)", \
+            challenge_fix("93-session-slimming")
+    if "NO_AT_BRIDGE" in read("/etc/X11/Xsession.d/90ghostboard-lean"):
+        return PASS, "at-spi2 neutralisé, aucun processus", ""
+    return FAIL, "NO_AT_BRIDGE non posé", challenge_fix("93-session-slimming")
+
+
+def c_tumbler():
+    if process_running("tumblerd"):
+        return FAIL, "tumblerd en cours d'exécution (~30 Mo)", \
+            challenge_fix("93-session-slimming")
+    return PASS, "aucun générateur de vignettes actif", ""
+
+
+def c_thunar_daemon():
+    if any("--daemon" in c for c in process_cmdlines("Thunar")):
+        return FAIL, "démon Thunar résident (~35 Mo)", \
+            challenge_fix("93-session-slimming")
+    return PASS, "pas de démon Thunar", ""
+
+
+def c_gvfs_monitors():
+    noisy = []
+    for mon in ("gvfs-gphoto2-volume-monitor", "gvfs-mtp-volume-monitor",
+                "gvfs-afc-volume-monitor", "gvfs-goa-volume-monitor"):
+        if process_running(mon):
+            noisy.append(mon.replace("gvfs-", "").replace("-volume-monitor", ""))
+    if noisy:
+        return FAIL, f"moniteurs inutiles actifs : {', '.join(noisy)}", \
+            challenge_fix("93-session-slimming")
+    return PASS, "seul udisks2 surveille les volumes", ""
+
+
+def c_upower():
+    has_battery = any(read(str(p / "type")) == "Battery"
+                      for p in Path("/sys/class/power_supply").glob("*")) \
+        if Path("/sys/class/power_supply").exists() else False
+    if has_battery:
+        return SKIP, "une batterie est exposée — UPower a un rôle", ""
+    if unit_state("upower.service") == "enabled":
+        return FAIL, "UPower surveille des batteries inexistantes", \
+            "sudo systemctl disable --now upower.service"
+    return PASS, "UPower inactif (aucune batterie exposée)", ""
+
+
+def c_command_palette():
+    """La palette est le chemin clavier principal : si rofi manque ou si son
+    thème n'est pas généré, le deck se pilote à la souris — sur un Q20, non."""
+    if not shutil.which("ghost-run"):
+        return FAIL, "ghost-run absent", challenge_fix("50-theme")
+    if not shutil.which("rofi"):
+        return FAIL, "rofi absent — la palette ne peut pas s'afficher", \
+            "sudo apt install rofi"
+    rasi = Path.home() / ".config" / "rofi" / "ghostboard.rasi"
+    if not rasi.exists():
+        return FAIL, "thème rofi non généré", "sudo ghost-theme apply"
+    return PASS, "palette disponible (Super+Espace)", ""
+
+
+def c_intel_ddx():
+    if pkg_installed("xserver-xorg-video-intel"):
+        return FAIL, "le DDX « intel » abandonné est installé — plus lent que " \
+                     "modesetting sur Alder Lake-N", \
+            "sudo apt purge xserver-xorg-video-intel"
+    return PASS, "pilote modesetting + glamor uniquement", ""
+
+
+def c_gpu_idle():
+    """Après le boot, plus aucune boucle GPU : c'est une cible, pas un souhait."""
+    dri = Path("/dev/dri")
+    if not dri.exists():
+        return SKIP, "pas de nœud /dev/dri", ""
+    allowed = {"xfwm4", "Xorg", "X", "xfdesktop", "xfce4-panel"}
+    clients = set()
+    for node in list(dri.glob("card*")) + list(dri.glob("renderD*")):
+        for pid in sh("fuser", str(node)).split():
+            pid = pid.strip().rstrip("cemrft")
+            if pid.isdigit():
+                comm = read(f"/proc/{pid}/comm")
+                if comm and comm not in allowed:
+                    clients.add(comm)
+    if clients:
+        return FAIL, f"clients GPU résiduels : {', '.join(sorted(clients))}", \
+            "vérifier que l'animation de boot a bien détruit son contexte"
+    return PASS, "aucune boucle GPU en dehors du compositeur", ""
+
+
+def c_swap():
+    total = 0
+    for line in read("/proc/meminfo").splitlines():
+        if line.startswith("SwapTotal:"):
+            total = int(line.split()[1])
+    ram_gb = 0
+    for line in read("/proc/meminfo").splitlines():
+        if line.startswith("MemTotal:"):
+            ram_gb = int(line.split()[1]) / 1048576
+    if ram_gb >= 12 and total == 0:
+        return PASS, f"{ram_gb:.0f} Go de RAM, aucun swap — rien à échanger", ""
+    if ram_gb >= 12 and total > 0:
+        return FAIL, f"{total // 1024} Mo de swap sur une machine à {ram_gb:.0f} Go", \
+            "sudo swapoff -a puis retirer la ligne de /etc/fstab"
+    if total > 0:
+        return PASS, f"{total // 1024} Mo de swap (RAM limitée : justifié)", ""
+    return FAIL, f"{ram_gb:.0f} Go de RAM sans swap ni zram", \
+        challenge_fix("10-base-system")
+
+
+def c_idle_ram():
+    info = {}
+    for line in read("/proc/meminfo").splitlines():
+        k, _, v = line.partition(":")
+        if v:
+            info[k] = int(v.split()[0])
+    used = (info.get("MemTotal", 0) - info.get("MemAvailable", 0)) / 1024
+    if used < 900:
+        return PASS, f"{used:.0f} Mo au repos (cible < 900 Mo)", ""
+    return FAIL, f"{used:.0f} Mo au repos, cible < 900 Mo", \
+        "ghost-bench pour la répartition par processus"
+
+
+def challenge_fix(step: str) -> str:
+    return f"sudo {REPO}/install/ghostboard-install.sh --step {step} --force"
+
+
+CHECKS = [
+    ("Démarrage", [
+        ("Temporisation GRUB", "~5 s", c_grub_timeout),
+        ("os-prober", "—", c_os_prober),
+        ("initramfs", "~0,3 s", c_initramfs),
+        ("Console noyau", "~0,2 s", c_quiet_boot),
+        ("Mode d'ouverture de session", "~1-2 s", c_session_mode),
+    ]),
+    ("Stockage", [
+        ("/tmp en RAM", "écritures NVMe", c_tmpfs),
+        ("noatime sur /", "écritures NVMe", c_noatime),
+        ("Ordonnanceur NVMe", "latence", c_nvme_sched),
+        ("Swap", "latence", c_swap),
+    ]),
+    ("Énergie", [
+        ("Gouverneur CPU", "watts", c_governor),
+        ("Préférence énergie/perf", "watts", c_epp),
+        ("Aucun démon d'énergie", "~15 Mo", c_power_oneshot),
+        ("Veille USB : entrées exclues", "fiabilité", c_input_not_suspended),
+    ]),
+    ("Services", [
+        ("Services superflus coupés", "boot + RAM", c_services_disabled),
+        ("Unités en échec", "—", c_failed_units),
+    ]),
+    ("Session", [
+        ("Pont d'accessibilité", "~20 Mo", c_at_spi),
+        ("Générateur de vignettes", "~30 Mo", c_tumbler),
+        ("Démon Thunar", "~35 Mo", c_thunar_daemon),
+        ("Moniteurs de volumes", "~30 Mo", c_gvfs_monitors),
+        ("UPower", "~10 Mo", c_upower),
+    ]),
+    ("Graphique", [
+        ("Palette de commandes", "clavier", c_command_palette),
+        ("Pilote d'affichage", "réactivité", c_intel_ddx),
+        ("Aucune boucle GPU au repos", "watts", c_gpu_idle),
+    ]),
+    ("Résultat", [
+        ("RAM au repos", "cible", c_idle_ram),
+    ]),
+]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Audit des optimisations GHOSTBOARD OS")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--fails", action="store_true", help="n'afficher que les écarts")
+    ap.add_argument("--fix", action="store_true",
+                    help="afficher les commandes de correction (sans les exécuter)")
+    args = ap.parse_args()
+
+    results, n_fail, n_pass, n_skip = [], 0, 0, 0
+    for domain, checks in CHECKS:
+        for label, gain, fn in checks:
+            try:
+                status, detail, fix = fn()
+            except Exception as exc:                       # noqa: BLE001
+                status, detail, fix = FAIL, f"contrôle en erreur : {exc}", ""
+            results.append({"domain": domain, "check": label, "gain": gain,
+                            "status": status, "detail": detail, "fix": fix})
+            n_fail += status == FAIL
+            n_pass += status == PASS
+            n_skip += status == SKIP
+
+    if args.json:
+        print(json.dumps({"results": results, "pass": n_pass,
+                          "fail": n_fail, "skipped": n_skip}, indent=2,
+                         ensure_ascii=False))
+        return 1 if n_fail else 0
+
+    print()
+    print(f"{INK['ok']}  GHOSTBOARD OS — audit de performance{INK['off']}")
+    print(f"{INK['dim']}  état réel du système, pas les jalons d'installation{INK['off']}")
+    current = None
+    for r in results:
+        if args.fails and r["status"] != FAIL:
+            continue
+        if r["domain"] != current:
+            current = r["domain"]
+            print(f"\n{INK['dim']}  ── {current}{INK['off']}")
+        mark = {PASS: f"{INK['ok']}  OK {INK['off']}",
+                FAIL: f"{INK['ko']}  KO {INK['off']}",
+                SKIP: f"{INK['dim']}  -- {INK['off']}"}[r["status"]]
+        print(f"{mark} {r['check']:<32s} {INK['dim']}{r['detail']}{INK['off']}")
+        if r["fix"] and (r["status"] == FAIL) and (args.fix or not args.fails):
+            print(f"       {INK['dim']}→ {r['fix']}{INK['off']}")
+
+    print()
+    verdict = (f"{INK['ok']}tout est conforme{INK['off']}" if not n_fail
+               else f"{INK['ko']}{n_fail} écart(s){INK['off']}")
+    print(f"  {n_pass} conforme(s) · {n_fail} écart(s) · {n_skip} sans objet"
+          f"  —  {verdict}")
+    if n_skip:
+        print(f"  {INK['dim']}« sans objet » = le matériel ou le composant n'existe "
+              f"pas sur cette machine{INK['off']}")
+    print()
+    return 1 if n_fail else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

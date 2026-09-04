@@ -1,0 +1,108 @@
+/* ==========================================================================
+   {{meta.os_name}} — palette de commandes (rofi).
+   GÉNÉRÉ par theme/render-theme.py depuis brand/palette.toml. NE PAS ÉDITER.
+
+   Pourquoi rofi et pas une interface écrite à la main : c'est un lanceur
+   clavier éprouvé, sans démon, entièrement thémable. Sur un BlackBerry Q20
+   sans souris, taper trois lettres et valider bat n'importe quelle grille.
+   Il est habillé ici avec la palette du système — même source de vérité que
+   le reste, aucune couleur en dur.
+
+   Géométrie calée sur la dalle : {{layout.screen_w}}x{{layout.screen_h}}.
+   ========================================================================== */
+
+* {
+    background-color:  transparent;
+    text-color:        {{text}};
+    font:              "{{font.ui}} {{font.ui_pt}}";
+    margin:            0;
+    padding:           0;
+    spacing:           0;
+}
+
+window {
+    /* 78 % de la largeur, ancré haut : la liste descend vers l'utilisateur
+       au lieu de recouvrir le centre de l'écran. */
+    width:             {{rofi_w}}px;
+    location:          north;
+    anchor:            north;
+    y-offset:          {{rofi_y}}px;
+    background-color:  {{startmenu_bg}};
+    border:            1px;
+    border-color:      {{separator}};
+    border-radius:     10px;
+    padding:           10px;
+    children:          [ inputbar, message, listview ];
+}
+
+inputbar {
+    background-color:  {{surface}};
+    border:            1px;
+    border-color:      {{separator}};
+    border-radius:     8px;
+    padding:           6px 10px;
+    spacing:           8px;
+    children:          [ prompt, entry ];
+}
+
+prompt {
+    /* Ce que fait la machine : accent. */
+    text-color:        {{accent}};
+    font:              "{{font.display}} {{font.ui_pt}}";
+}
+
+entry {
+    /* Ce que tape l'utilisateur : couleur d'entrée. Convention de tout l'OS. */
+    text-color:        {{input}};
+    cursor:            text;
+    placeholder:       "app, commande, carte, fenêtre…";
+    placeholder-color: {{text_dim}};
+}
+
+message {
+    padding:           6px 4px 0px;
+}
+
+textbox {
+    text-color:        {{text_dim}};
+    font:              "{{font.ui}} {{font.ui_pt}}";
+}
+
+listview {
+    /* 6 lignes : au-delà on dépasse la dalle une fois l'inputbar comptée. */
+    lines:             {{rofi_lines}};
+    columns:           1;
+    fixed-height:      false;
+    scrollbar:         false;
+    padding:           8px 0px 0px;
+    spacing:           2px;
+    dynamic:           true;
+}
+
+element {
+    padding:           5px 8px;
+    border-radius:     6px;
+    spacing:           10px;
+    children:          [ element-text ];
+}
+
+element normal.normal   { text-color: {{text}}; }
+element alternate.normal{ text-color: {{text}}; }
+
+element selected.normal {
+    background-color:  {{accent}};
+    text-color:        {{on_accent}};
+}
+
+element-text {
+    vertical-align:    0.5;
+    text-color:        inherit;
+    background-color:  transparent;
+}
+
+error-message {
+    padding:           10px;
+    background-color:  {{error_dim}};
+    text-color:        {{text}};
+    border-radius:     8px;
+}

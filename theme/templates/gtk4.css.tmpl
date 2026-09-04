@@ -1,0 +1,27 @@
+/* {{meta.os_name}} — GTK 4. GÉNÉRÉ. NE PAS ÉDITER.
+   Peu d'apps GTK4 sur ce deck, mais celles qui existent ne doivent pas
+   apparaître en clair au milieu d'un OS noir. */
+@define-color window_bg_color      {{bg}};
+@define-color window_fg_color      {{text}};
+@define-color view_bg_color        {{surface}};
+@define-color view_fg_color        {{text}};
+@define-color headerbar_bg_color   {{panel}};
+@define-color headerbar_fg_color   {{text}};
+@define-color popover_bg_color     {{panel}};
+@define-color popover_fg_color     {{text}};
+@define-color accent_bg_color      {{accent}};
+@define-color accent_fg_color      {{on_accent}};
+@define-color accent_color         {{accent}};
+@define-color destructive_bg_color {{input}};
+@define-color error_color          {{input}};
+@define-color card_bg_color        {{panel}};
+@define-color dialog_bg_color      {{panel}};
+@define-color borders              {{separator}};
+
+window, .background { background-color: {{bg}}; color: {{text}};
+  font-family: "{{font.ui}}", monospace; font-size: {{font.ui_size_px}}px; }
+* { transition: none; }
+entry, entry text { color: {{input}}; caret-color: {{input}}; }
+headerbar { background-color: {{panel}}; border-bottom: 1px solid {{separator}}; }
+button { border-radius: 6px; }
+scrollbar slider { background-color: {{text_dim}}; min-width: 6px; min-height: 6px; }

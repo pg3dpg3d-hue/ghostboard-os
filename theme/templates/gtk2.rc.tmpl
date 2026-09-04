@@ -1,0 +1,21 @@
+# {{meta.os_name}} — GTK 2. GÉNÉRÉ. NE PAS ÉDITER.
+# Encore utile : quelques outils (dont des utilitaires radio/série) sont GTK2.
+gtk-font-name = "{{font.ui}} {{font.ui_pt}}"
+style "ghostboard" {
+  bg[NORMAL]        = "{{bg}}"
+  bg[PRELIGHT]      = "{{hover}}"
+  bg[ACTIVE]        = "{{active}}"
+  bg[SELECTED]      = "{{accent}}"
+  bg[INSENSITIVE]   = "{{bg}}"
+  fg[NORMAL]        = "{{text}}"
+  fg[PRELIGHT]      = "{{text}}"
+  fg[SELECTED]      = "{{on_accent}}"
+  fg[INSENSITIVE]   = "{{text_disabled}}"
+  base[NORMAL]      = "{{surface}}"
+  base[SELECTED]    = "{{accent}}"
+  base[INSENSITIVE] = "{{bg}}"
+  text[NORMAL]      = "{{text}}"
+  text[SELECTED]    = "{{on_accent}}"
+  text[INSENSITIVE] = "{{text_disabled}}"
+}
+class "GtkWidget" style "ghostboard"
