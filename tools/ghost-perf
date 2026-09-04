@@ -406,6 +406,20 @@ def c_upower():
     return PASS, "UPower inactif (aucune batterie exposée)", ""
 
 
+def c_command_palette():
+    """La palette est le chemin clavier principal : si rofi manque ou si son
+    thème n'est pas généré, le deck se pilote à la souris — sur un Q20, non."""
+    if not shutil.which("ghost-run"):
+        return FAIL, "ghost-run absent", challenge_fix("50-theme")
+    if not shutil.which("rofi"):
+        return FAIL, "rofi absent — la palette ne peut pas s'afficher", \
+            "sudo apt install rofi"
+    rasi = Path.home() / ".config" / "rofi" / "ghostboard.rasi"
+    if not rasi.exists():
+        return FAIL, "thème rofi non généré", "sudo ghost-theme apply"
+    return PASS, "palette disponible (Super+Espace)", ""
+
+
 def c_intel_ddx():
     if pkg_installed("xserver-xorg-video-intel"):
         return FAIL, "le DDX « intel » abandonné est installé — plus lent que " \
@@ -503,6 +517,7 @@ CHECKS = [
         ("UPower", "~10 Mo", c_upower),
     ]),
     ("Graphique", [
+        ("Palette de commandes", "clavier", c_command_palette),
         ("Pilote d'affichage", "réactivité", c_intel_ddx),
         ("Aucune boucle GPU au repos", "watts", c_gpu_idle),
     ]),

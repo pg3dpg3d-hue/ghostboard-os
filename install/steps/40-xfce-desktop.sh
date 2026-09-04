@@ -12,6 +12,10 @@ need_root
 require_step 00-preflight
 apt_refresh
 
+# rofi : moteur de la palette de commandes (ghost-run). Pas un démon — il
+# démarre, on choisit, il sort. Habillé depuis brand/palette.toml comme le
+# reste. wmctrl : lecture et bascule des bureaux virtuels pour la palette.
+#
 # Pas de xserver-xorg-video-intel : le DDX « intel » est abandonné et, sur
 # Alder Lake-N, plus lent et plus fragile que le pilote `modesetting` + glamor
 # que 20-display-800x480.sh demande explicitement. L'installer ne ferait
@@ -25,7 +29,8 @@ apt_install \
   xfce4-whiskermenu-plugin \
   thunar \
   papirus-icon-theme adwaita-icon-theme \
-  policykit-1 xdg-utils
+  policykit-1 xdg-utils \
+  rofi wmctrl
 
 step "Gestionnaire de session"
 info "LightDM est le plus léger des gestionnaires de connexion GTK."

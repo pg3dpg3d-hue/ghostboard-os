@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""
+ghost-run — palette de commandes de GHOSTBOARD OS.
+
+Une seule recherche floue sur TOUT ce qui est lançable ou atteignable :
+
+    applications   les .desktop installés
+    commandes      les outils ghost-* , avec ce qu'ils font
+    cartes         les ESP32 branchées — ouvre directement leur console
+    fenêtres       les fenêtres ouvertes — bascule dessus
+    bureaux        les espaces de travail
+
+Sur un BlackBerry Q20 sans souris, taper trois lettres et valider bat
+n'importe quelle grille d'icônes. C'est le chemin principal de l'OS ; le menu
+démarrer reste là pour la souris.
+
+    ghost-run              palette complète
+    ghost-run --apps       applications seulement
+    ghost-run --list       ce qui serait proposé, sur la sortie standard
+                           (sert aux tests : aucune interface n'est ouverte)
+
+L'affichage passe par rofi, habillé depuis brand/palette.toml comme le reste
+du système. Aucun démon : rofi démarre, choisit, sort.
+"""
+from __future__ import annotations
+
+import argparse
+import configparser
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SHARE = Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard"))
+APP_DIRS = [
+    Path.home() / ".local/share/applications",
+    Path("/usr/local/share/applications"),
+    Path("/usr/share/applications"),
+]
+
+# Les outils de l'OS, avec ce qu'ils font. Cette liste est la même que celle du
+# README : si un outil est ajouté, il doit apparaître ici pour être atteignable
+# au clavier.
+GHOST_COMMANDS = [
+    ("ghost-status", "Réseau, API joignable, mémoire, cartes branchées", True),
+    ("ghost-perf", "Auditer chaque optimisation sur le système vivant", True),
+    ("ghost-bench", "Mesurer boot, RAM, CPU, NVMe", True),
+    ("ghost-bruce list", "Lister les cartes ESP32 branchées", True),
+    ("ghost-theme apply", "Régénérer tout le thème depuis la palette", True),
+    ("ghost-theme check", "Vérifier contrastes et cohérence de la palette", True),
+    ("ghost-boot-splash", "Rejouer l'animation d'allumage", False),
+    ("ghost-agent-session status", "Sur quel écran travaille l'agent", True),
+    ("ghost-session-mode status", "Mode d'ouverture de session", True),
+    ("ghost-claude", "Lancer Claude Code", True),
+]
+
+
+def have(cmd: str) -> bool:
+    return shutil.which(cmd) is not None
+
+
+def run_out(*cmd: str, timeout: int = 8) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout).stdout
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+# ---------------------------------------------------------------------------
+#  Sources
+# ---------------------------------------------------------------------------
+def entries_apps() -> list[dict]:
+    """Les .desktop installés. Les entrées NoDisplay/Hidden sont ignorées —
+    ce sont des neutralisations d'autostart, pas des applications."""
+    seen, out = set(), []
+    for d in APP_DIRS:
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.desktop")):
+            if f.name in seen:
+                continue
+            seen.add(f.name)
+            c = configparser.ConfigParser(interpolation=None, strict=False)
+            try:
+                c.read(f, encoding="utf-8")
+                e = c["Desktop Entry"]
+            except (configparser.Error, KeyError, OSError):
+                continue
+            if e.get("Type") != "Application":
+                continue
+            if e.get("NoDisplay", "").lower() == "true":
+                continue
+            if e.get("Hidden", "").lower() == "true":
+                continue
+            name = e.get("Name", "").strip()
+            if not name:
+                continue
+            # %U, %f et consorts sont des champs de code XDG : sans fichier à
+            # passer, ils doivent disparaître, sinon l'application reçoit un
+            # argument littéral « %U ».
+            exec_line = " ".join(tok for tok in e.get("Exec", "").split()
+                                 if not tok.startswith("%"))
+            if not exec_line:
+                continue
+            out.append({"section": "app", "label": name,
+                        "hint": e.get("Comment", "")[:58],
+                        "action": ("shell", exec_line)})
+    return out
+
+
+def entries_commands() -> list[dict]:
+    out = []
+    for cmd, hint, in_term in GHOST_COMMANDS:
+        if not have(cmd.split()[0]):
+            continue
+        out.append({"section": "cmd", "label": cmd, "hint": hint,
+                    "action": ("term" if in_term else "shell", cmd)})
+    return out
+
+
+def entries_boards() -> list[dict]:
+    """Cartes ESP32 branchées. On interroge ghost-bruce en JSON plutôt que de
+    reparser sysfs : une seule implémentation de la détection."""
+    if not have("ghost-bruce"):
+        return []
+    raw = run_out("ghost-bruce", "list", "--json")
+    try:
+        boards = json.loads(raw) if raw.strip() else []
+    except json.JSONDecodeError:
+        return []
+    out = []
+    for b in boards:
+        name = b.get("board") or b.get("product") or "carte ESP32"
+        out.append({
+            "section": "board", "label": f"{name} — {b['device']}",
+            "hint": b.get("chip", "") or "console série",
+            "action": ("term", f"ghost-bruce -d {shlex.quote(b['device'])} console"),
+        })
+    return out
+
+
+def entries_windows() -> list[dict]:
+    """Fenêtres ouvertes. xdotool est déjà là pour le serveur MCP : pas de
+    paquet supplémentaire juste pour lister des fenêtres."""
+    if not os.environ.get("DISPLAY") or not have("xdotool"):
+        return []
+    ids = run_out("xdotool", "search", "--onlyvisible", "--name", ".").split()
+    out = []
+    for wid in ids[:40]:
+        title = run_out("xdotool", "getwindowname", wid).strip()
+        if not title or title in ("xfdesktop", "Desktop"):
+            continue
+        out.append({"section": "win", "label": title, "hint": "basculer sur la fenêtre",
+                    "action": ("raise", wid)})
+    return out
+
+
+def entries_workspaces() -> list[dict]:
+    if not os.environ.get("DISPLAY") or not have("wmctrl"):
+        return []
+    out = []
+    for line in run_out("wmctrl", "-d").splitlines():
+        parts = line.split(None, 9)
+        if len(parts) < 2:
+            continue
+        idx, current = parts[0], parts[1] == "*"
+        name = parts[-1] if len(parts) > 8 else f"Bureau {int(idx) + 1}"
+        out.append({"section": "desk", "label": f"Bureau {int(idx) + 1} — {name}",
+                    "hint": "actuel" if current else "basculer",
+                    "action": ("desktop", idx)})
+    return out
+
+
+SECTION_TAG = {"app": "APP ", "cmd": "CMD ", "board": "CARTE",
+               "win": "FEN ", "desk": "BUREAU"}
+
+
+def collect(only_apps: bool) -> list[dict]:
+    items = entries_apps()
+    if not only_apps:
+        items += entries_commands() + entries_boards() + entries_windows() \
+              + entries_workspaces()
+    return items
+
+
+# ---------------------------------------------------------------------------
+#  Exécution
+# ---------------------------------------------------------------------------
+def dispatch(item: dict) -> int:
+    kind, payload = item["action"]
+    if kind == "shell":
+        subprocess.Popen(shlex.split(payload), start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif kind == "term":
+        term = next((t for t in ("xfce4-terminal", "x-terminal-emulator", "xterm")
+                     if have(t)), None)
+        if not term:
+            print("aucun émulateur de terminal trouvé", file=sys.stderr)
+            return 1
+        # --hold : la sortie d'un outil de diagnostic doit rester lisible.
+        args = ([term, "--hold", "-T", item["label"], "-e", payload]
+                if term == "xfce4-terminal" else [term, "-e", payload])
+        subprocess.Popen(args, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif kind == "raise":
+        subprocess.run(["xdotool", "windowactivate", payload], capture_output=True)
+    elif kind == "desktop":
+        subprocess.run(["wmctrl", "-s", payload], capture_output=True)
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Palette de commandes GHOSTBOARD OS")
+    ap.add_argument("--apps", action="store_true", help="applications seulement")
+    ap.add_argument("--list", action="store_true",
+                    help="afficher les entrées sans ouvrir d'interface")
+    ap.add_argument("--prompt", default="GHOSTBOARD")
+    args = ap.parse_args()
+
+    items = collect(args.apps)
+    if not items:
+        print("rien à proposer", file=sys.stderr)
+        return 1
+
+    lines = [f"{SECTION_TAG[i['section']]}  {i['label']}"
+             + (f"   — {i['hint']}" if i["hint"] else "") for i in items]
+
+    if args.list:
+        for line in lines:
+            print(line)
+        return 0
+
+    if not have("rofi"):
+        print("rofi n'est pas installé.\n"
+              "  sudo apt install rofi\n"
+              "  (ou : ghost-run --list pour voir les entrées)", file=sys.stderr)
+        return 1
+
+    # -format i : rofi renvoie l'INDICE choisi, pas le texte. On n'a donc
+    # jamais à reparser un libellé, et un libellé contenant un tiret ou un
+    # chemin ne peut pas casser le dispatch.
+    proc = subprocess.run(
+        ["rofi", "-dmenu", "-i", "-format", "i", "-p", args.prompt,
+         "-no-custom", "-theme", "ghostboard"],
+        input="\n".join(lines), capture_output=True, text=True)
+    choice = proc.stdout.strip()
+    if not choice.isdigit():
+        return 0                      # Échap : sortie silencieuse, c'est normal
+    idx = int(choice)
+    if not 0 <= idx < len(items):
+        return 1
+    return dispatch(items[idx])
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

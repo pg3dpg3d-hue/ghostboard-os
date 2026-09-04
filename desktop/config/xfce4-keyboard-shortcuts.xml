@@ -14,6 +14,13 @@
            et Ctrl+Espace reste un chemin de secours toujours disponible. -->
       <property name="Super_L" type="string" value="xfce4-popup-whiskermenu"/>
       <property name="&lt;Primary&gt;space" type="string" value="xfce4-popup-whiskermenu"/>
+      <!-- Palette de commandes : le chemin PRINCIPAL de l'OS au clavier.
+           Applications, commandes ghost-*, cartes branchées, fenêtres et
+           bureaux dans une seule recherche floue. Le Q20 n'ayant pas de touche
+           Super, Alt droite en tient lieu (voir 30-keyboard-bbq20.sh). -->
+      <property name="&lt;Super&gt;space" type="string" value="ghost-run"/>
+      <property name="&lt;Primary&gt;&lt;Alt&gt;space" type="string" value="ghost-run"/>
+      <property name="&lt;Super&gt;r" type="string" value="ghost-run"/>
       <!-- Terminal : l'app la plus utilisée du deck, elle mérite un raccourci court. -->
       <property name="&lt;Primary&gt;&lt;Alt&gt;t" type="string" value="xfce4-terminal"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;c" type="string" value="ghost-claude"/>
@@ -36,6 +43,22 @@
       <property name="F11" type="string" value="fullscreen_key"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;Left" type="string" value="left_workspace_key"/>
       <property name="&lt;Primary&gt;&lt;Alt&gt;Right" type="string" value="right_workspace_key"/>
+      <property name="&lt;Super&gt;1" type="string" value="workspace_1_key"/>
+      <property name="&lt;Super&gt;2" type="string" value="workspace_2_key"/>
+      <property name="&lt;Super&gt;3" type="string" value="workspace_3_key"/>
+      <property name="&lt;Super&gt;4" type="string" value="workspace_4_key"/>
+      <!-- Déplacer la fenêtre active vers un bureau : sur 480 px de haut, on
+           range par bureau plutôt que par empilement. -->
+      <property name="&lt;Super&gt;&lt;Shift&gt;Left" type="string" value="move_window_prev_workspace_key"/>
+      <property name="&lt;Super&gt;&lt;Shift&gt;Right" type="string" value="move_window_next_workspace_key"/>
+      <!-- Pavage en coins : deux fenêtres côte à côte tiennent sur 800 px de
+           large ; en quarts, on lit encore un terminal de 40 colonnes. -->
+      <property name="&lt;Super&gt;&lt;Shift&gt;Up" type="string" value="tile_up_key"/>
+      <property name="&lt;Super&gt;&lt;Shift&gt;Down" type="string" value="tile_down_key"/>
+      <property name="&lt;Super&gt;&lt;Primary&gt;Left" type="string" value="tile_up_left_key"/>
+      <property name="&lt;Super&gt;&lt;Primary&gt;Right" type="string" value="tile_up_right_key"/>
+      <property name="&lt;Super&gt;&lt;Primary&gt;&lt;Shift&gt;Left" type="string" value="tile_down_left_key"/>
+      <property name="&lt;Super&gt;&lt;Primary&gt;&lt;Shift&gt;Right" type="string" value="tile_down_right_key"/>
     </property>
   </property>
 </channel>

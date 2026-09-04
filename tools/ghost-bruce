@@ -198,6 +198,12 @@ def check_access(dev: dict) -> None:
 # ---------------------------------------------------------------------------
 def cmd_list(args) -> int:
     devices = discover()
+    if getattr(args, "json", False):
+        # Sortie machine : c'est ce que consomme ghost-run pour proposer les
+        # cartes dans la palette de commandes. Une seule implémentation de la
+        # détection, pas deux.
+        print(json.dumps(devices, indent=2, ensure_ascii=False))
+        return 0 if devices else 1
     if not devices:
         print(INK.faint("Aucune carte série USB détectée."))
         print(INK.faint("Branche une carte ESP32 sous Bruce, puis relance."))
@@ -221,6 +227,36 @@ def cmd_info(args) -> int:
     d = pick(discover(), args.device)
     print(json.dumps(d, indent=2, ensure_ascii=False))
     return 0
+
+
+def cmd_watch(args) -> int:
+    """Suit les branchements et débranchements en direct.
+
+    Utile quand une carte redémarre en boucle ou qu'un câble a du jeu : on voit
+    apparaître et disparaître le port sans relancer `list` à la main.
+    Processus au premier plan, pas de démon — il s'arrête avec Ctrl+C.
+    """
+    print(INK.faint(f"surveillance des ports série — Ctrl+C pour arrêter "
+                    f"(sondage {args.interval:g} s)"))
+    known: dict[str, dict] = {}
+    first = True
+    try:
+        while True:
+            now = {d["device"]: d for d in discover()}
+            for dev in sorted(now.keys() - known.keys()):
+                d = now[dev]
+                label = d["board"] or d["product"] or "carte inconnue"
+                mark = "présent" if first else "BRANCHÉ"
+                print(f"{INK.machine('+ ' + mark):<28s} {INK.body(dev)}  "
+                      f"{INK.machine(label)}")
+            for dev in sorted(known.keys() - now.keys()):
+                print(f"{INK.user('- DÉBRANCHÉ'):<28s} {INK.body(dev)}")
+            known = now
+            first = False
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        print()
+        return 0
 
 
 def _open_serial(dev: str, baud: int):
@@ -278,9 +314,11 @@ def cmd_console(args) -> int:
     check_access(d)
     try:
         import serial  # noqa: F401
-        return _console_pyserial(d["device"], args.baud)
     except ImportError:
         return _console_picocom(d["device"], args.baud)
+    if args.line:
+        return _console_line_mode(d["device"], args.baud, args)
+    return _console_pyserial(d["device"], args.baud, args)
 
 
 def _console_picocom(dev: str, baud: int) -> int:
@@ -292,7 +330,87 @@ def _console_picocom(dev: str, baud: int) -> int:
     return subprocess.call([exe, "-b", str(baud), dev])
 
 
-def _console_pyserial(dev: str, baud: int) -> int:
+HISTORY = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) \
+    / "ghostboard" / "bruce-history"
+
+
+def _console_line_mode(dev: str, baud: int, args) -> int:
+    """Console en mode LIGNE : on compose localement, on envoie sur Entrée.
+
+    Le mode brut (par défaut) est le bon pour un terminal série — la carte gère
+    l'écho et l'édition. Mais quand la carte n'offre pas d'édition de ligne,
+    taper une commande de trente caractères sans pouvoir corriger est pénible.
+    Ici readline fournit édition, historique persistant et rappel des commandes
+    déjà envoyées.
+
+    L'autocomplétion se fait sur l'HISTORIQUE, pas sur une liste de commandes
+    du firmware : le jeu de commandes de Bruce dépend de sa version, et
+    proposer des commandes inventées serait pire que ne rien proposer.
+    """
+    import readline
+    import select
+    import serial
+
+    HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        readline.read_history_file(HISTORY)
+    except OSError:
+        pass
+    readline.set_history_length(500)
+
+    def completer(text: str, state: int):
+        seen = {readline.get_history_item(i)
+                for i in range(1, readline.get_current_history_length() + 1)}
+        hits = sorted(h for h in seen if h and h.startswith(text))
+        return hits[state] if state < len(hits) else None
+
+    readline.set_completer(completer)
+    readline.parse_and_bind("tab: complete")
+
+    try:
+        ser = serial.Serial(dev, baud, timeout=0)
+    except Exception as exc:
+        die(f"ouverture de {dev} impossible : {exc}")
+
+    print(INK.machine(f"─ ghost-bruce ─ {dev} @ {baud} bauds ─ mode ligne"))
+    print(INK.faint("  Entrée envoie · Tab rappelle l'historique · Ctrl+D quitte\n"))
+
+    def drain() -> None:
+        while select.select([ser.fileno()], [], [], 0)[0]:
+            data = ser.read(4096)
+            if not data:
+                break
+            sys.stdout.write(INK.accent + data.decode("utf-8", "replace") + INK.reset)
+            sys.stdout.flush()
+
+    try:
+        while True:
+            drain()
+            try:
+                line = input(INK.user("> ") if INK.on else "> ")
+            except EOFError:
+                break
+            if line.strip():
+                readline.add_history(line)
+            ser.write((line + args.newline).encode("utf-8", "replace"))
+            ser.flush()
+            deadline = time.time() + args.reply_wait
+            while time.time() < deadline:
+                drain()
+                time.sleep(0.02)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            readline.write_history_file(HISTORY)
+        except OSError:
+            pass
+        ser.close()
+    print(INK.faint("\nconsole fermée"))
+    return 0
+
+
+def _console_pyserial(dev: str, baud: int, args=None) -> int:
     """Console série avec les codes couleur de la marque.
 
     Sortie de la carte en accent, saisie en couleur d'entrée : on voit d'un
@@ -309,8 +427,11 @@ def _console_pyserial(dev: str, baud: int) -> int:
         die(f"ouverture de {dev} impossible : {exc}")
 
     print(INK.machine(f"─ ghost-bruce ─ {dev} @ {baud} bauds"))
-    print(INK.faint("  quitter : Ctrl+]   —   la sortie de la carte est en violet\n"))
+    print(INK.faint("  quitter : Ctrl+]   —   la sortie de la carte est en violet"
+                    + ("   —   horodatage relatif actif" if stamp else "") + "\n"))
 
+    stamp = bool(args and getattr(args, "timestamp", False))
+    t0 = time.monotonic()
     stdin_fd = sys.stdin.fileno()
     interactive = sys.stdin.isatty()
     saved = termios.tcgetattr(stdin_fd) if interactive else None
@@ -324,7 +445,15 @@ def _console_pyserial(dev: str, baud: int) -> int:
             if ser.fileno() in ready:
                 data = ser.read(4096)
                 if data:
-                    sys.stdout.write(INK.accent + data.decode("utf-8", "replace"))
+                    text = data.decode("utf-8", "replace")
+                    if stamp:
+                        # Horodatage relatif au démarrage de la console : sur un
+                        # ESP32 qui redémarre en boucle, savoir QUAND une ligne
+                        # est arrivée vaut souvent plus que son contenu.
+                        elapsed = time.monotonic() - t0
+                        text = text.replace(
+                            "\n", f"\n{INK.dim}[{elapsed:7.3f}]{INK.accent} ")
+                    sys.stdout.write(INK.accent + text)
                     sys.stdout.flush()
             if stdin_fd in ready:
                 ch = os.read(stdin_fd, 1024)
@@ -400,9 +529,25 @@ def main() -> int:
     ap.add_argument("-b", "--baud", type=int, default=115200, help="débit (défaut 115200)")
     sub = ap.add_subparsers(dest="cmd")
 
-    sub.add_parser("list", help="lister les cartes détectées").set_defaults(fn=cmd_list)
+    p_list = sub.add_parser("list", help="lister les cartes détectées")
+    p_list.add_argument("--json", action="store_true",
+                        help="sortie machine (consommée par ghost-run)")
+    p_list.set_defaults(fn=cmd_list)
+
+    p_watch = sub.add_parser("watch", help="suivre branchements et débranchements")
+    p_watch.add_argument("--interval", type=float, default=0.5,
+                         help="intervalle de sondage, en secondes")
+    p_watch.set_defaults(fn=cmd_watch)
     sub.add_parser("info", help="détail de la carte sélectionnée").set_defaults(fn=cmd_info)
-    sub.add_parser("console", help="console série interactive").set_defaults(fn=cmd_console)
+    p_con = sub.add_parser("console", help="console série interactive")
+    p_con.add_argument("--line", action="store_true",
+                       help="mode ligne : édition locale, historique, Tab")
+    p_con.add_argument("--timestamp", action="store_true",
+                       help="préfixer chaque ligne reçue de son horodatage relatif")
+    p_con.add_argument("--newline", default="\r\n", help="fin de ligne envoyée")
+    p_con.add_argument("--reply-wait", type=float, default=0.35,
+                       help="attente de réponse après envoi, en mode ligne")
+    p_con.set_defaults(fn=cmd_console)
 
     p_send = sub.add_parser("send", help="envoyer une commande et lire la réponse")
     p_send.add_argument("command")

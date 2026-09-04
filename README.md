@@ -29,6 +29,70 @@ terminal or data.
 800 × 480 is the constraint that decides everything else: 15 px font floor,
 34 px taskbar, thin scrollbars, no desktop icons, full-screen by default.
 
+## Keyboard and window management
+
+The deck has a thumb keyboard and no mouse, so the keyboard is the primary path
+and the mouse is the exception.
+
+### Command palette — `Super + Space`
+
+`ghost-run` is one fuzzy search over everything reachable at once:
+
+| Section | What it offers |
+| --- | --- |
+| `APP` | Every installed `.desktop` launcher |
+| `CMD` | The `ghost-*` tools, each with what it does |
+| `CARTE` | Connected ESP32 boards — opens their serial console directly |
+| `FEN` | Open windows — switches to them |
+| `BUREAU` | Virtual desktops |
+
+The engine is **rofi** — not a daemon: it starts, you choose, it exits. It is
+themed from `brand/palette.toml` like everything else, and its geometry is
+**computed** from the panel size so the list can never overflow 480 px of
+height. Boards come from `ghost-bruce list --json`, so detection has one
+implementation, not two.
+
+The Q20 has no Super key: `30-keyboard-bbq20` maps **Right Alt → Super**, and
+`Ctrl+Alt+Space` is bound to the same action so you are never dependent on a
+single remap. `ghost-run --list` prints what the palette would offer, without
+opening anything.
+
+### Desktops and tiling
+
+Four named desktops — **SHELL · AGENT · BOARDS · WEB** — with a compact pager in
+the taskbar. On a 480 px-tall panel, switching desktop replaces resizing windows.
+
+| Keys | Action |
+| --- | --- |
+| `Super` + `1`–`4` | Go to desktop |
+| `Super+Shift` + `←/→` | Move the active window to the next desktop |
+| `Super` + `←/→` | Tile left / right half |
+| `Super+Ctrl` + `←/→` | Tile to a top corner |
+| `Super+Ctrl+Shift` + `←/→` | Tile to a bottom corner |
+| `F11` | Full screen |
+| `Super+Space` | Command palette |
+| `Ctrl+Alt+T` | Terminal |
+
+Two 40-column terminals fit side by side on 800 px. The pager costs a panel
+plugin, not a process.
+
+### Serial console
+
+`ghost-bruce console` is raw by default — correct for a serial terminal, where
+the board owns echo and editing. Beyond that:
+
+```bash
+ghost-bruce console --line        # local editing, persistent history, Tab recall
+ghost-bruce console --timestamp   # relative timestamp on every received line
+ghost-bruce watch                 # follow plug/unplug live
+ghost-bruce list --json           # machine-readable, consumed by ghost-run
+```
+
+Tab completion draws on **your history**, not on a list of firmware commands:
+Bruce's command set depends on its version, and offering invented ones would be
+worse than offering none. `--timestamp` matters when a board is boot-looping —
+*when* a line arrived is often worth more than what it said.
+
 ## Performance targets
 
 | Target | Value |
@@ -323,7 +387,8 @@ desktop/
   launchers/                the pinned apps
 boot-animation/             index.html, boot.js, vendor + font fetchers
 mcp-computer-use/server.js  the MCP server (no dependencies)
-tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-theme,
+tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-run,
+                            ghost-theme,
                             ghost-status, ghost-claude, ghost-browser,
                             ghost-boot-splash, ghostboard-session,
                             build-boot-preview.py
@@ -384,6 +449,7 @@ bash tests/run-all.sh
 | `tests/test-bruce.sh` | Board detection against a synthetic sysfs tree — CP210x, CH340, native ESP32 USB, access errors |
 | `tests/test-mcp.js` | MCP handshake, tool catalogue, and `screenshot`/`click`/`type`/`key` executing against a real X server |
 | `tests/test-perf.sh` | `ghost-perf` structure and coverage, the per-process memory breakdown, and a regression lock on the process-detection false positive |
+| `tests/test-desktop.js` | Drives the generated demo desktop in a real browser — terminal, simulated serial console, palette ranking, desktop switching, window drag/minimise/close. Skips cleanly with no browser. |
 
 `run-all.sh` also asserts that `--dry-run` leaves `/etc/fstab` untouched.
 

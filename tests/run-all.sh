@@ -32,6 +32,11 @@ else
   node tests/test-mcp.js || rc=1
 fi
 
+hr "Bureau de démonstration (interface)"
+# Facultatif : se déclare « sauté » sans navigateur, ce qui est le cas sur le
+# deck lui-même. La suite ne doit pas dépendre d'un Chromium de test.
+node tests/test-desktop.js || rc=1
+
 hr "Installateur : le mode à blanc n'écrit rien"
 before="$(md5sum /etc/fstab 2>/dev/null | cut -d' ' -f1)"
 GHOSTBOARD_USER="${USER:-root}" ./install/ghostboard-install.sh --dry-run --yes \

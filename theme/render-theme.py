@@ -68,6 +68,15 @@ def build_values(p: Palette) -> dict:
     v["rule_w"] = round(w * 0.38)
     v["tagline_y"] = round(h * 0.44) + 52
     v["corner_y"] = h - 16
+
+    # Palette de commandes : 78 % de la largeur, ancrée en haut. Le nombre de
+    # lignes est CALCULÉ pour que la fenêtre ne dépasse jamais la dalle —
+    # sur 480 px de haut, une liste de 10 entrées sort de l'écran.
+    v["rofi_w"] = round(w * 0.78)
+    v["rofi_y"] = round(h * 0.10)
+    line_px = p.font["ui_size_px"] + 14          # texte + padding de l'élément
+    chrome = 10 * 2 + 34 + 8 + round(h * 0.10)   # marges + inputbar + espace
+    v["rofi_lines"] = max(3, min(8, (h - chrome) // line_px))
     return v
 
 
@@ -149,6 +158,7 @@ def render_all(p: Palette, out: Path) -> dict[str, Path]:
     emit("terminalrc.tmpl", share / "terminalrc", "terminalrc")
     emit("Xresources.tmpl", share / "Xresources", "Xresources")
     emit("wallpaper.svg.tmpl", share / "wallpaper.svg", "wallpaper.svg")
+    emit("rofi.rasi.tmpl", share / "ghostboard.rasi", "rofi")
     emit("start-icon.svg.tmpl",
          share / "icons" / "hicolor" / "scalable" / "apps" / "ghostboard-start.svg",
          "start-icon")
@@ -277,6 +287,23 @@ def install(built: Path, home: Path, share_dir: Path) -> None:
         else:
             shutil.copy2(item, share_dir / item.name)
     print(f"  ressources -> {share_dir}")
+
+    rofi_dir = home / ".config" / "rofi"
+    rofi_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built / "share" / "ghostboard.rasi", rofi_dir / "ghostboard.rasi")
+    (rofi_dir / "config.rasi").write_text(
+        '// GHOSTBOARD OS — GÉNÉRÉ. NE PAS ÉDITER.\n'
+        'configuration {\n'
+        '  modi: "drun,run";\n'
+        '  show-icons: false;\n'
+        '  terminal: "xfce4-terminal";\n'
+        '  kb-cancel: "Escape";\n'
+        '  matching: "fuzzy";\n'
+        '  sort: true;\n'
+        '  sorting-method: "fzf";\n'
+        '}\n'
+        '@theme "ghostboard"\n', encoding="utf-8")
+    print(f"  rofi       -> {rofi_dir}")
 
     term_dir = home / ".config" / "xfce4" / "terminal"
     term_dir.mkdir(parents=True, exist_ok=True)
