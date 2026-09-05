@@ -34,6 +34,25 @@ grep -q 'authorized = true' "$FW/src/modules/deauther.cpp"
 ck "attaque gatée derrière 'authorized'" $?
 
 echo
+echo "firmware — modules ESP-HACK réimplémentés (clean-room)"
+for m in beaconspam evilportal sniffer blespam; do
+  [[ -f "$FW/src/modules/$m.cpp" ]]; ck "module $m présent" $?
+done
+# Chaque module d'ÉMISSION doit passer par le gate d'autorisation partagé.
+for m in beaconspam evilportal blespam; do
+  grep -q 'AuthGate::confirm' "$FW/src/modules/$m.cpp"; ck "$m : gaté avant émission" $?
+done
+# Le sniffer est passif : pas de gate, pas d'émission.
+! grep -q 'esp_wifi_80211_tx\|AuthGate::confirm' "$FW/src/modules/sniffer.cpp"
+ck "sniffer : passif (aucune émission)" $?
+# Menu à deux niveaux avec les catégories à matériel externe.
+for cat in SubGHz Infrared NRF24 NFC iButton; do
+  grep -q "\"$cat\"" "$FW/src/modules/menu.cpp"; ck "catégorie $cat au menu" $?
+done
+# Les catégories à matériel absent doivent afficher un gate, pas émettre.
+grep -q 'gbDrawHardwareGate' "$FW/src/modules/hwstub.cpp"; ck "matériel absent -> écran 'Connect'" $?
+
+echo
 echo "firmware — cohérence structurelle"
 bad=0
 for f in "$FW"/src/*.cpp "$FW"/src/modules/*.cpp; do

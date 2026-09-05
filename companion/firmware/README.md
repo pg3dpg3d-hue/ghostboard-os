@@ -4,45 +4,84 @@ Firmware autonome pour la carte ESP32 du cyberdeck (écran OLED + 4 boutons +
 LED NeoPixel). Deux modules Wi-Fi, un menu, l'identité GHOSTBOARD.
 
 ```
-GHOSTBOARD           ← splash au boot
-> WiFi Scan (passive)   reconnaissance passive : SSID, RSSI, BSSID, canal
-  Deauther  (DoS)       test de résilience : émission de trames 802.11 deauth
+GHOSTBOARD            ← splash au boot ; menu à deux niveaux
+> WiFi                    Scan · Deauther · Beacon Spam · Evil Portal · Sniffer
+  Bluetooth               BLE Spam
+  SubGHz                  (nécessite un CC1101)
+  Infrared                (nécessite une LED IR)
+  NRF24                   (nécessite un NRF24L01)
+  NFC                     (nécessite un ST25R3916)
+  iButton                 (nécessite un pad 1-Wire)
 ```
 
 Le deck (Radxa) ne fait pas tourner ce code : il le **compile et le flashe**
 sur la carte, via `ghost-bruce flash`. La carte fonctionne ensuite seule.
 
+Les modules WiFi/BLE sont des **réimplémentations clean-room** inspirées des
+fonctions du firmware ESP-HACK (AGPL-3.0) : aucune ligne n'en est copiée, donc
+ce projet garde sa propre licence.
+
 ## Modules
 
-| Module | Nature | Émission RF |
+### WiFi
+
+| Module | Nature | Émission RF | Matériel |
+|---|---|---|---|
+| **Scan** | Reconnaissance **passive** | Aucune | ESP32 seul |
+| **Deauther** | **DoS** — déconnexion forcée de clients | trames deauth | ESP32 seul |
+| **Beacon Spam** | Diffusion de **faux SSID** | balises 802.11 | ESP32 seul |
+| **Evil Portal** | AP factice + **portail captif** capturant les identifiants | AP ouvert | ESP32 seul |
+| **Sniffer** | Comptage de trames (**passif**, mode promiscuous) | Aucune | ESP32 seul |
+
+### Bluetooth
+
+| Module | Nature | Matériel |
 |---|---|---|
-| **WiFi Scan** | Reconnaissance **passive** | Aucune — écoute seulement |
-| **Deauther** | **Déni de service** (déconnexion forcée de clients) | Oui — trames deauth |
+| **BLE Spam** | Flood d'annonces d'appairage (Apple / Swift Pair / Fast Pair) | ESP32 seul (BLE) |
 
-### ⚠️ Deauther — usage autorisé uniquement
+### Matériel externe (phase 2)
 
-Émettre des trames deauth déconnecte de force les clients d'un point d'accès.
-**Ne l'utilise que sur un réseau que tu possèdes, ou pour lequel tu as une
-autorisation écrite.** Dans beaucoup de pays, l'émission contre un tiers est
-illégale (brouillage / interférence intentionnelle).
+Ces catégories sont dans le menu mais **inertes** tant que la puce n'est pas
+câblée : chaque entrée affiche un écran « Connect &lt;puce&gt; ». Voir
+[Feuille de route matériel](#feuille-de-route-matériel).
 
-Le firmware impose un **écran de confirmation** avant la première émission :
+| Catégorie | Puce requise | Fonctions visées |
+|---|---|---|
+| **SubGHz** | CC1101 (SPI) | lecture/TX/RAW, spectre, brute-force, jammer |
+| **Infrared** | LED IR TX/RX | TV-B-Gone, télécommande universelle |
+| **NRF24** | NRF24L01 (SPI) | scan de spectre 2,4 GHz |
+| **NFC** | ST25R3916 (SPI) | lecture / émulation |
+| **iButton** | pad 1-Wire | lecture / émulation |
 
-1. Sélectionne un réseau, `RIGHT` → détails.
-2. `RIGHT` pour démarrer → l'écran **AUTHORIZED USE ONLY** apparaît.
-3. **Maintiens `RIGHT` ~1,5 s** pour confirmer. `LEFT` annule.
-4. L'émission ne démarre qu'après cette confirmation. Elle est redemandée à
-   chaque entrée dans le module.
+> Les **jeux** d'ESP-HACK (Snake, Doom…) ne sont volontairement pas repris.
 
-Le scan reste libre : c'est de la reconnaissance passive.
+### ⚠️ Émission — usage autorisé uniquement
+
+**Deauther, Beacon Spam, Evil Portal et BLE Spam émettent.** Perturber un réseau
+ou piéger des utilisateurs tiers est illégal dans beaucoup de pays (brouillage /
+interférence intentionnelle, capture de données). **Ne les utilise que sur ton
+propre matériel, ou avec une autorisation écrite.**
+
+Chaque module d'émission impose un **écran de confirmation** avant la première
+émission (barrière partagée, `authgate.cpp`) :
+
+1. `RIGHT` pour démarrer → l'écran **AUTHORIZED USE ONLY** apparaît.
+2. **Maintiens `RIGHT` ~1,5 s** pour confirmer (une jauge se remplit). `LEFT`
+   annule.
+3. L'émission ne démarre qu'après confirmation, redemandée à chaque entrée.
+
+**Scan** et **Sniffer** restent libres : ce sont de la reconnaissance passive,
+aucune émission.
 
 ## Navigation
 
-| Bouton | Menu | Dans un module |
-|---|---|---|
-| `UP` / `DOWN` | change de module | déplace la sélection |
-| `RIGHT` | ouvre le module | détails / démarrer |
-| `LEFT` | — | retour (liste, puis menu) |
+Menu à deux niveaux : **catégories → modules → module**.
+
+| Bouton | Catégories | Liste de modules | Dans un module |
+|---|---|---|---|
+| `UP` / `DOWN` | change de catégorie | change de module | déplace la sélection |
+| `RIGHT` | ouvre la catégorie | ouvre le module | détails / démarrer |
+| `LEFT` | — | retour aux catégories | retour (liste, puis menu) |
 
 ## Compiler / flasher
 
@@ -86,7 +125,26 @@ tools/gen-theme.py --check    # échoue si le header est périmé (utilisé par 
 |---|---|---|
 | repos | éteinte | — |
 | scan / activité | violet | `accent` `#A855F7` |
-| émission deauth | rose | `input` `#FF4D8D` (couleur d'alerte) |
+| émission (deauth, spam, portail) | rose | `input` `#FF4D8D` (couleur d'alerte) |
+
+## Feuille de route matériel
+
+Les catégories SubGHz / Infrared / NRF24 / NFC / iButton sont présentes au menu
+mais **inertes** : `gbHardwarePresent()` renvoie faux tant que la macro `HW_*`
+correspondante n'est pas définie dans `include/hardware.h`, et le module affiche
+alors « Connect &lt;puce&gt; ».
+
+Pour activer une catégorie (phase 2) :
+
+1. Câble la puce et **renseigne ses broches** dans `include/hardware.h`, puis
+   décommente la macro `HW_<puce>`.
+2. Le vrai module remplacera le placeholder de `hwstub.cpp`. Bibliothèques
+   pressenties (à ajouter dans `platformio.ini` le moment venu) :
+   - **CC1101** → `SmartRC-CC1101-Driver-Lib` (SubGHz brut) ;
+   - **IR** → `crankyoldgit/IRremoteESP8266` (TX/RX + TV-B-Gone) ;
+   - **NRF24** → `nRF24/RF24` (scan de spectre) ;
+   - **iButton** → `OneWire` ;
+   - **NFC (ST25R3916)** → pilote vendeur ST (le plus lourd).
 
 ## Notes d'intégration (à valider sur la carte)
 
@@ -94,20 +152,26 @@ Je n'ai pas pu compiler/exécuter ce firmware ici (pas de toolchain ESP32 ni de
 carte dans l'environnement). Ce qui reste à vérifier sur le matériel réel :
 
 - **broches** de `config.h` conformes à ta carte ;
-- **ré-entrée entre modules** : le module Deauther réinitialise entièrement le
-  driver Wi-Fi (`esp_wifi_init`) à chaque entrée ; si tu passes de WiFi Scan à
-  Deauther sans redémarrer, `esp_wifi_init` peut renvoyer une erreur. En cas de
-  reboot au changement de module, ajoute un `esp_wifi_deinit()` au retour menu ;
-- **portée / efficacité** de l'émission (dépend de l'antenne et du canal).
+- **ré-entrée entre modules** : Deauther/Beacon/Evil Portal touchent au driver
+  Wi-Fi (init/mode/stop) à chaque entrée. Le menu remet le Wi-Fi à `WIFI_OFF` au
+  retour, mais l'enchaînement Scan → Deauther (`esp_wifi_init`) est à vérifier ;
+  en cas de reboot, ajouter un `esp_wifi_deinit()` au retour menu ;
+- **BLE Spam** : les charges d'annonce et la randomisation d'adresse (NimBLE)
+  déclenchent des popups variables selon la cible et la version d'OS ;
+- **Evil Portal** : capture en RAM uniquement (pas de SD) — le compteur et le
+  dernier identifiant sont à l'écran ;
+- **portée / efficacité** des émissions (antenne, canal, puissance).
 
 ## Provenance
 
-La logique de scan et d'injection vient d'un firmware fourni par l'utilisateur.
-Elle est **reprise telle quelle** ; les seules modifications GHOSTBOARD sont
-balisées `[GB]` dans `src/modules/deauther.cpp` :
+Le module **Deauther** vient d'un firmware fourni par l'utilisateur, **repris
+tel quel** ; les modifications GHOSTBOARD sont balisées `[GB]` dans
+`src/modules/deauther.cpp` (gate d'autorisation, correction du dépassement de
+tableau, SSID unifié, retour menu, couleurs LED).
 
-- gate d'autorisation avant émission ;
-- correction d'un dépassement de tableau (`deauth_frame[26]` → `[24]`, le
-  tableau ne fait que 26 octets) ;
-- SSID de l'AP unifié (le rebuild au channel-hop utilisait un autre nom) ;
-- retour au menu, réinitialisation d'état, couleurs LED de la charte.
+Les modules **Beacon Spam, Evil Portal, Sniffer et BLE Spam** sont des
+**réimplémentations clean-room** inspirées des fonctions du firmware
+[ESP-HACK](https://github.com/Teapot174/ESP-HACK) (AGPL-3.0) : **aucune ligne
+n'en a été copiée**, afin que GHOSTBOARD conserve sa propre licence. Les **jeux**
+d'ESP-HACK ne sont pas repris. Le matériel externe (SubGHz/IR/NRF24/NFC/iButton)
+est câblé au menu mais implémenté en phase 2.
