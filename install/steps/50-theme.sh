@@ -48,7 +48,7 @@ good "lanceurs installés"
 step "Outils GHOSTBOARD"
 for t in ghost-theme ghost-status ghost-claude ghost-browser ghost-bench \
          ghost-perf ghost-run ghost-llm ghost-llm-proxy ghost-vault ghost-bruce \
-         ghost-boot-splash \
+         ghost-crack ghost-boot-splash \
          ghostboard-session; do
   install_file "$GHOSTBOARD_REPO/tools/$t" "/usr/local/bin/$t" 0755
 done

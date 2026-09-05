@@ -16,6 +16,7 @@
 #include "sniffer.h"
 #include "authtest.h"
 #include "bruteforce.h"
+#include "handshake.h"
 #include "blespam.h"
 #include "hwstub.h"
 
@@ -30,6 +31,7 @@ static const Module WIFI[] = {
     {"Sniffer",         Sniffer::setup,          Sniffer::loop},
     {"Auth Test",       AuthTest::setup,         AuthTest::loop},
     {"Brute Force",     BruteForce::setup,       BruteForce::loop},
+    {"Handshake",       Handshake::setup,        Handshake::loop},
 };
 static const Module BLE[] = {
     {"BLE Spam",        BleSpam::setup,          BleSpam::loop},

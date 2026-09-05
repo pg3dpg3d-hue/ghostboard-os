@@ -6,6 +6,7 @@ LED NeoPixel). Deux modules Wi-Fi, un menu, l'identité GHOSTBOARD.
 ```
 GHOSTBOARD            ← splash au boot ; menu à deux niveaux
 > WiFi                    Scan · Deauther · Beacon Spam · Evil Portal · Sniffer
+                          Auth Test · Brute Force · Handshake
   Bluetooth               BLE Spam
   SubGHz                  (nécessite un CC1101)
   Infrared                (nécessite une LED IR)
@@ -34,6 +35,7 @@ ce projet garde sa propre licence.
 | **Sniffer** | Comptage de trames (**passif**, mode promiscuous) | Aucune | ESP32 seul |
 | **Auth Test** | Teste la robustesse d'une clé WPA (dictionnaire en ligne) | tentatives d'auth | ESP32 seul |
 | **Brute Force** | Génère les combinaisons à la volée et les teste (jeu + longueur) | tentatives d'auth | ESP32 seul |
+| **Handshake** | Capture le handshake WPA (EAPOL) pour un crack **hors-ligne** | trames deauth | ESP32 seul |
 
 ### Bluetooth
 
@@ -59,8 +61,8 @@ câblée : chaque entrée affiche un écran « Connect &lt;puce&gt; ». Voir
 
 ### ⚠️ Émission — usage autorisé uniquement
 
-**Deauther, Beacon Spam, Evil Portal et BLE Spam émettent** ; **Auth Test**
-tente de s'authentifier. Perturber un réseau, piéger des utilisateurs tiers ou
+**Deauther, Beacon Spam, Evil Portal, BLE Spam et Handshake émettent** ;
+**Auth Test** tente de s'authentifier. Perturber un réseau, piéger des utilisateurs tiers ou
 s'authentifier sans autorisation est illégal dans beaucoup de pays (brouillage /
 interférence intentionnelle, capture de données, accès non autorisé). **Ne les
 utilise que sur ton propre matériel, ou avec une autorisation écrite.**
@@ -74,6 +76,15 @@ utilise que sur ton propre matériel, ou avec une autorisation écrite.**
   WPA prend ~4 s **en ligne** : l'écran affiche l'**ETA du plein espace** avant de
   lancer. Réaliste seulement sur un tout petit espace (ex. clé connue à 8
   chiffres) — sinon c'est des années. Ce n'est pas un crack hors-ligne.
+- **Handshake** est la **bonne** méthode d'audit WPA : au lieu de tester des clés
+  en ligne, il capture **une fois** le handshake à quatre voies (EAPOL) qu'un
+  client rejoue à la (re)connexion, puis on casse **hors-ligne** sur le deck. Le
+  module écoute en promiscuous sur le canal de la cible et envoie des **deauth**
+  ciblés pour forcer une reconnexion ; dès qu'il a ≥ 2 trames EAPOL, `RIGHT` les
+  **dumpe sur le port série** (protocole `GBHS-*`). L'outil deck
+  [`ghost-crack`](#crack-hors-ligne-ghost-crack) en fait un `.pcap` et lance
+  `aircrack-ng`. Hors-ligne, on teste des milliers de clés/s (vs ~4 s/essai) —
+  mais un dictionnaire ne trouve qu'une clé **devinable** : une clé forte résiste.
 
 Chaque module actif impose un **écran de confirmation** avant la première action
 (barrière partagée, `authgate.cpp`) :
@@ -184,6 +195,40 @@ hors plage sont écartées (impossibles comme clé WPA), les doublons supprimés
 l'ordre conservé. La liste tient en flash (≈4 Mo) ; pour un très gros dictionnaire
 (millions d'entrées), c'est la **carte SD** qui prendra le relais en phase 2.
 
+## Crack hors-ligne (`ghost-crack`)
+
+Le module **Handshake** capture, le deck casse — **hors-ligne**. Contrairement à
+Auth Test / Brute Force (essais en ligne, ~4 s chacun), on ne touche plus au
+réseau une fois le handshake en main : `aircrack-ng` teste des milliers de
+clés/s en local.
+
+```sh
+# prérequis deck (une fois)
+sudo apt install aircrack-ng python3-serial
+
+# 1. sur la carte : WiFi > Handshake > choisir la cible > confirmer >
+#    attendre "HANDSHAKE CAPTURED" > RIGHT (dump série)
+
+# 2. sur le deck : tout d'un coup — capture + crack + AFFICHE LA CLÉ
+ghost-crack auto -o maison.pcap
+ghost-crack auto -o maison.pcap -w /usr/share/wordlists/rockyou.txt
+
+# … ou en deux temps si tu préfères garder le pcap séparément :
+ghost-crack capture -o maison.pcap        # dump série -> .pcap
+ghost-crack run maison.pcap               # crack hors-ligne -> clé
+
+ghost-crack info          # aircrack-ng / pyserial / carte détectés
+```
+
+Le `.pcap` est standard (DLT 105, 802.11) : lisible aussi par Wireshark,
+hcxtools, etc. Le protocole série `GBHS-*` (émis par le firmware) est décrit en
+tête de `tools/ghost-crack` ; `ghost-crack capture --replay <dump.txt>` rejoue
+un dump texte sans carte (utilisé par les tests).
+
+> Même hors-ligne, un dictionnaire ne révèle qu'une clé **faible ou courante**.
+> Une clé forte (ou la clé aléatoire d'usine d'une box) **résiste** — c'est le
+> résultat attendu d'un audit, pas un échec de l'outil.
+
 ## Feuille de route matériel
 
 Les catégories SubGHz / Infrared / NRF24 / NFC / iButton sont présentes au menu
@@ -226,8 +271,8 @@ tel quel** ; les modifications GHOSTBOARD sont balisées `[GB]` dans
 `src/modules/deauther.cpp` (gate d'autorisation, correction du dépassement de
 tableau, SSID unifié, retour menu, couleurs LED).
 
-Les modules **Beacon Spam, Evil Portal, Sniffer et BLE Spam** sont des
-**réimplémentations clean-room** inspirées des fonctions du firmware
+Les modules **Beacon Spam, Evil Portal, Sniffer, BLE Spam et Handshake** sont
+des **réimplémentations clean-room** inspirées des fonctions du firmware
 [ESP-HACK](https://github.com/Teapot174/ESP-HACK) (AGPL-3.0) : **aucune ligne
 n'en a été copiée**, afin que GHOSTBOARD conserve sa propre licence. Les **jeux**
 d'ESP-HACK ne sont pas repris. Le matériel externe (SubGHz/IR/NRF24/NFC/iButton)

@@ -35,11 +35,11 @@ ck "attaque gatée derrière 'authorized'" $?
 
 echo
 echo "firmware — modules ESP-HACK réimplémentés (clean-room)"
-for m in beaconspam evilportal sniffer blespam authtest bruteforce; do
+for m in beaconspam evilportal sniffer blespam authtest bruteforce handshake; do
   [[ -f "$FW/src/modules/$m.cpp" ]]; ck "module $m présent" $?
 done
 # Chaque module actif (émission ou tentative d'auth) passe par le gate partagé.
-for m in beaconspam evilportal blespam authtest bruteforce; do
+for m in beaconspam evilportal blespam authtest bruteforce handshake; do
   grep -q 'AuthGate::confirm' "$FW/src/modules/$m.cpp"; ck "$m : gaté avant action" $?
 done
 # Helper de connexion partagé, réutilisé par authtest et bruteforce.
@@ -74,6 +74,47 @@ bad = [w for w in words if not (8 <= len(w) <= 63)]
 sys.exit(1 if bad else 0)
 PY
 ck "toutes les entrées dans la plage WPA 8..63" $?
+
+echo
+echo "firmware — Handshake : capture EAPOL + dump série"
+grep -q '"Handshake"' "$FW/src/modules/menu.cpp"; ck "Handshake câblé au menu WiFi" $?
+grep -q 'GBHS-BEGIN' "$FW/src/modules/handshake.cpp"; ck "dump série au protocole GBHS-*" $?
+grep -q 'esp_wifi_80211_tx' "$FW/src/modules/handshake.cpp"; ck "deauth émis (force la reconnexion)" $?
+grep -q '0x88 && p\[hdr + 7\] == 0x8E' "$FW/src/modules/handshake.cpp"; ck "filtre EAPOL (EtherType 0x888E)" $?
+# L'override d'injection ne doit exister qu'UNE fois (deauther), sinon lien KO.
+n=$(grep -rl 'int ieee80211_raw_frame_sanity_check' "$FW/src" | wc -l)
+[[ "$n" == "1" ]]; ck "override raw-tx défini une seule fois (pas de doublon de lien)" $?
+
+echo
+echo "deck — ghost-crack (crack hors-ligne)"
+CRACK="$ROOT/tools/ghost-crack"
+[[ -f "$CRACK" ]]; ck "outil ghost-crack présent" $?
+grep -q 'ghost-crack' "$ROOT/install/steps/50-theme.sh"; ck "ghost-crack installé (50-theme)" $?
+grep -q 'ghost-crack' "$ROOT/tools/ghost-run"; ck "ghost-crack dans la palette (ghost-run)" $?
+python3 "$CRACK" info >/dev/null 2>&1; ck "ghost-crack info s'exécute" $?
+grep -q 'KEY FOUND' "$CRACK"; ck "récupère la clé depuis aircrack (KEY FOUND)" $?
+grep -q 'def cmd_auto' "$CRACK"; ck "commande 'auto' (capture -> crack -> clé)" $?
+python3 "$CRACK" auto --help >/dev/null 2>&1; ck "ghost-crack auto exposé" $?
+# Bout-en-bout hors carte : un dump GBHS -> .pcap valide (DLT 105).
+tmp="$(mktemp -d)"
+# Deux trames « EAPOL » (données, LLC/SNAP + EtherType 0x888E) : de quoi que
+# capture les reconnaisse et écrive un handshake exploitable.
+frame="08000000112233445566aabbccddeeffaabbccddeeff0000aaaa03000000888e0203005f"
+{ echo "bruit avant"
+  echo "GBHS-BEGIN AABBCCDDEEFF 6 MonReseau"
+  echo "GBHS-PKT 1000 $frame"
+  echo "GBHS-PKT 8000 $frame"
+  echo "GBHS-END 2"; } > "$tmp/dump.txt"
+python3 "$CRACK" capture --replay "$tmp/dump.txt" -o "$tmp/hs.pcap" >/dev/null 2>&1
+ck "capture --replay produit un .pcap" $?
+python3 - "$tmp/hs.pcap" <<'PY'
+import struct, sys
+b = open(sys.argv[1], "rb").read()
+magic, _, _, _, _, snap, net = struct.unpack("<IHHiIII", b[:24])
+sys.exit(0 if magic == 0xA1B2C3D4 and net == 105 and len(b) > 24 else 1)
+PY
+ck "pcap : magic + DLT 105 (IEEE802.11)" $?
+rm -rf "$tmp"
 
 echo
 echo "firmware — cohérence structurelle"
