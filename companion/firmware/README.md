@@ -33,6 +33,7 @@ ce projet garde sa propre licence.
 | **Evil Portal** | AP factice + **portail captif** capturant les identifiants | AP ouvert | ESP32 seul |
 | **Sniffer** | Comptage de trames (**passif**, mode promiscuous) | Aucune | ESP32 seul |
 | **Auth Test** | Teste la robustesse d'une clé WPA (dictionnaire en ligne) | tentatives d'auth | ESP32 seul |
+| **Brute Force** | Génère les combinaisons à la volée et les teste (jeu + longueur) | tentatives d'auth | ESP32 seul |
 
 ### Bluetooth
 
@@ -68,6 +69,11 @@ utilise que sur ton propre matériel, ou avec une autorisation écrite.**
   contre un réseau WPA pour voir s'il cède. Sur **ton** réseau = légitime. Sur un
   réseau tiers = accès illégal. La wordlist est **embarquée** (voir
   [Wordlist](#wordlist-auth-test)).
+- **Brute Force** génère les combinaisons à la volée (jeu de caractères +
+  longueur) au lieu d'une liste. La génération est instantanée, mais chaque essai
+  WPA prend ~4 s **en ligne** : l'écran affiche l'**ETA du plein espace** avant de
+  lancer. Réaliste seulement sur un tout petit espace (ex. clé connue à 8
+  chiffres) — sinon c'est des années. Ce n'est pas un crack hors-ligne.
 
 Chaque module actif impose un **écran de confirmation** avant la première action
 (barrière partagée, `authgate.cpp`) :

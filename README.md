@@ -398,7 +398,8 @@ The ESP32 companion runs its own firmware, in
 two-level menu (categories → modules) on the board's OLED:
 
 - **WiFi** — Scan (passive), Deauther (DoS), Beacon Spam, Evil Portal, Sniffer,
-  Auth Test (WPA dictionary — test your own network's key strength).
+  Auth Test (WPA dictionary), Brute Force (on-the-fly combinations, with live
+  full-space ETA) — both for testing your own network's key strength.
 - **Bluetooth** — BLE Spam (Apple / Swift Pair / Fast Pair pairing floods).
 - **SubGHz · Infrared · NRF24 · NFC · iButton** — present in the menu but inert
   until the matching chip (CC1101, IR LED, NRF24L01, ST25R3916, 1-Wire) is wired;
@@ -409,8 +410,9 @@ The WiFi/BLE modules are **clean-room reimplementations** inspired by the
 copied, so GHOSTBOARD keeps its own licence. ESP-HACK's games are not ported.
 
 > **The active modules are authorized-use-only.** Deauther, Beacon Spam, Evil
-> Portal and BLE Spam transmit; Auth Test tries to authenticate (a WPA
-> dictionary test of your own network's key). Disrupting networks, trapping
+> Portal and BLE Spam transmit; Auth Test and Brute Force try to authenticate
+> (WPA dictionary / on-the-fly combinations against your own network's key).
+> Disrupting networks, trapping
 > third-party users, or authenticating without permission is illegal in much of
 > the world. Every active module gates its **first** action behind a shared
 > `AUTHORIZED USE ONLY` screen and a ~1.5 s long-press confirmation, re-asked on

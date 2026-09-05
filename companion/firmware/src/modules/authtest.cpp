@@ -13,6 +13,7 @@
 #include "theme.h"
 #include "authgate.h"
 #include "authtest.h"
+#include "wifitry.h"
 #include "wordlist.h"   // GB_WORDLIST / GB_WORDLIST_COUNT, générés depuis data/wordlist.txt
 
 namespace AuthTest {
@@ -99,24 +100,6 @@ static void drawDone() {
     u8g2.sendBuffer();
 }
 
-// Tente un mot de passe ; renvoie true si la connexion aboutit.
-static bool tryPassword(const char *ssid, const char *pwd) {
-    WiFi.disconnect(true, true);
-    delay(100);
-    WiFi.begin(ssid, pwd);
-    unsigned long start = millis();
-    // ~7 s max par essai ; on sort tôt sur succès ou échec franc.
-    while (millis() - start < 7000) {
-        wl_status_t s = WiFi.status();
-        if (s == WL_CONNECTED) return true;
-        if (s == WL_CONNECT_FAILED || s == WL_NO_SSID_AVAIL) return false;
-        // Abandon manuel en cours d'essai.
-        if (digitalRead(BTN_PIN_LEFT) == LOW) return false;
-        delay(100);
-    }
-    return false;
-}
-
 void setup() {
     state = LIST;
     sel = top = 0;
@@ -136,7 +119,7 @@ bool loop() {
         // Un essai par passage de boucle, pour garder l'écran réactif.
         if (tried < WORD_COUNT && !found) {
             drawProgress();
-            if (tryPassword(targetSsid.c_str(), WORDS[tried])) {
+            if (WifiTry::attempt(targetSsid.c_str(), WORDS[tried])) {
                 found = true;
                 foundPwd = WORDS[tried];
             }

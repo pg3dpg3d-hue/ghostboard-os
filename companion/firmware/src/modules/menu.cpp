@@ -15,6 +15,7 @@
 #include "evilportal.h"
 #include "sniffer.h"
 #include "authtest.h"
+#include "bruteforce.h"
 #include "blespam.h"
 #include "hwstub.h"
 
@@ -28,6 +29,7 @@ static const Module WIFI[] = {
     {"Evil Portal",     EvilPortal::setup,       EvilPortal::loop},
     {"Sniffer",         Sniffer::setup,          Sniffer::loop},
     {"Auth Test",       AuthTest::setup,         AuthTest::loop},
+    {"Brute Force",     BruteForce::setup,       BruteForce::loop},
 };
 static const Module BLE[] = {
     {"BLE Spam",        BleSpam::setup,          BleSpam::loop},
