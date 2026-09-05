@@ -49,6 +49,9 @@ bash tests/test-vault.sh || rc=1
 hr "Firmware compagnon ESP32 (WiFi Scan + Deauther)"
 bash tests/test-firmware.sh || rc=1
 
+hr "ghost-crack bout-en-bout (vrai handshake ; sauté sans aircrack-ng)"
+bash tests/test-crack-e2e.sh || rc=1
+
 hr "Module RECON · Camera Audit (unités)"
 python3 camera-audit/tests/test_units.py || rc=1
 # La TUI (Textual) n'est pas installée dans la suite du dépôt : test_smoke.py
