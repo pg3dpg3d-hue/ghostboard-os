@@ -88,6 +88,19 @@ else
   row "Bruce boards" "$(faint 'none connected')"
 fi
 
+# ---- chiffrement ----------------------------------------------------------
+root_src="$(findmnt -no SOURCE / 2>/dev/null)"
+if [[ "$root_src" == /dev/mapper/* ]] && command -v cryptsetup >/dev/null 2>&1 \
+   && cryptsetup status "${root_src#/dev/mapper/}" 2>/dev/null | grep -qi luks; then
+  row "Encryption" "$(ok 'full disk (LUKS)')"
+elif mountpoint -q "$HOME/.local/share/ghostboard/vault" 2>/dev/null; then
+  row "Encryption" "$(ok 'vault open')  $(faint 'secrets encrypted')"
+elif [[ -f /var/lib/ghostboard/vault.img || -n "${GHOSTBOARD_VAULT_DEV:-}" ]]; then
+  row "Encryption" "$(bad 'vault closed')  $(faint 'sudo ghost-vault open')"
+else
+  row "Encryption" "$(bad 'none')  $(faint 'sudo ghost-vault create')"
+fi
+
 # ---- écran ----------------------------------------------------------------
 if [[ -n "${DISPLAY:-}" ]] && command -v xdpyinfo >/dev/null 2>&1; then
   row "Display" "$(faint "$(xdpyinfo | awk '/dimensions:/{print $2}') on $DISPLAY")"

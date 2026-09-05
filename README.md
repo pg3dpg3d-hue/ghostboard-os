@@ -233,6 +233,12 @@ nothing. See [docs/LOCAL-LLM.md](docs/LOCAL-LLM.md).
 **Control of the screen** is on-device too: the computer-use MCP server drives
 the X display for whichever brain is asking.
 
+Claude Code can also be pointed **at the local model** — `ghost-claude --local`
+runs it through `ghost-llm-proxy`, which translates the Anthropic Messages API
+to LM Studio's OpenAI API. It works, but a small local model is weak at the
+agentic loop; it's for offline chat/simple edits, not heavy agent work. See
+[docs/CLAUDE-CODE-LOCAL.md](docs/CLAUDE-CODE-LOCAL.md).
+
 ### Computer use over MCP
 
 `mcp-computer-use/server.js` — **zero npm dependencies**, on purpose. It starts
@@ -397,8 +403,8 @@ desktop/
 boot-animation/             index.html, boot.js, vendor + font fetchers
 mcp-computer-use/server.js  the MCP server (no dependencies)
 tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-run,
-                            ghost-llm (local LLM client), ghost-recon,
-                            ghost-theme,
+                            ghost-llm, ghost-llm-proxy (Anthropic->OpenAI bridge),
+                            ghost-vault (LUKS secrets), ghost-recon, ghost-theme,
                             ghost-status, ghost-claude, ghost-browser,
                             ghost-boot-splash, ghostboard-session,
                             build-boot-preview.py
@@ -461,6 +467,8 @@ bash tests/run-all.sh
 | `tests/test-bruce.sh` | Board detection against a synthetic sysfs tree — CP210x, CH340, native ESP32 USB, access errors |
 | `tests/test-mcp.js` | MCP handshake, tool catalogue, and `screenshot`/`click`/`type`/`key` executing against a real X server |
 | `tests/test-perf.sh` | `ghost-perf` structure and coverage, the per-process memory breakdown, and a regression lock on the process-detection false positive |
+| `tests/test-proxy.sh` | `ghost-llm-proxy` translating Anthropic Messages API ↔ OpenAI, against a mock LM Studio — non-streaming, streaming (text reconstitutes exactly), tool-call round-trip |
+| `tests/test-vault.sh` | `ghost-vault` — status, arg errors, and a real LUKS2 header write (open/mount is deck-verified) |
 | `tests/test-llm.sh` | `ghost-llm` against a mock OpenAI/LM Studio server — model listing, Dolphin auto-detect, streaming, pipe, override, dead-endpoint error |
 | `camera-audit/tests/test_units.py` | RECON module — scope barrier, Finding normalisation, demo backend, report (no deps) |
 | `tests/test-desktop.js` | Drives the generated demo desktop in a real browser — terminal, simulated serial console, palette ranking, desktop switching, window drag/minimise/close. Skips cleanly with no browser. |
@@ -477,6 +485,20 @@ and scan logic through a thin adapter, themes itself from the same palette, and
 serves its HTML report over Tailscale. It enforces the authorized-scope
 perimeter as a second barrier before any packet is sent. See
 [camera-audit/README.md](camera-audit/README.md) → *Intégration deck*.
+
+## Encryption
+
+The direct session opens without a password, so the deck carries secrets in the
+clear. Two layers, documented in [docs/ENCRYPTION.md](docs/ENCRYPTION.md):
+
+- **Full-disk encryption** — the proper protection, set up at Debian install
+  time (encrypted LVM). Can't be retrofitted by a script.
+- **`ghost-vault`** — a non-destructive LUKS2 vault for the secrets that matter
+  (Claude/API creds, LLM config, SSH keys, RECON reports), addable any time:
+  ```bash
+  sudo ghost-vault create && sudo ghost-vault open
+  ```
+  `ghost-status` shows an **Encryption** line (full disk / vault open / none).
 
 ## Recovery
 

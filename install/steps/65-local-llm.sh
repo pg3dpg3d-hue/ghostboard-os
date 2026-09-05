@@ -29,7 +29,9 @@ write_file "$GHOSTBOARD_SHARE/llm.json" <<JSON
   "system": "You are the on-device assistant of a GHOSTBOARD cyberdeck. Be concise: the screen is 4 inches. Plain text, no markdown tables.",
   "//ram": "Garde-fou : avertit si le modèle risque de ne pas tenir en RAM.",
   "ram_check": true,
-  "ram_reserve_gb": 2.0
+  "ram_reserve_gb": 2.0,
+  "//proxy": "Port de ghost-llm-proxy (route Claude Code sur le modèle local).",
+  "proxy_port": 8788
 }
 JSON
 run chmod a+r "$GHOSTBOARD_SHARE/llm.json"
@@ -82,6 +84,11 @@ if [[ "$ram" -lt 16 ]]; then
 else
   info "${ram} Go : un Dolphin 7B (q4) passe ; un 3B reste plus réactif sur la dalle"
 fi
+
+step "Claude Code sur le modèle local (facultatif)"
+info "ghost-claude --local  route Claude Code vers le modèle local via un proxy"
+info "de traduction (Anthropic -> OpenAI/LM Studio). Voir docs/CLAUDE-CODE-LOCAL.md."
+info "Le petit modèle local fait mal l'agentique : à réserver au chat/édition simple."
 
 say ""
 info "Chat : ghost-llm        (menu : AI · Local LLM)"

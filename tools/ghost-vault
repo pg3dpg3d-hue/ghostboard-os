@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  GHOSTBOARD OS — coffre chiffré (LUKS2)
+# ============================================================================
+#  La session s'ouvre sans mot de passe : quiconque tient le deck a un shell,
+#  et il embarque des identifiants (clé API Claude, config LLM, clés SSH). Ce
+#  coffre chiffre CE qui compte, sans réinstaller.
+#
+#  Deux niveaux de protection, à ne pas confondre :
+#    - Chiffrement DISQUE ENTIER (FDE)  -> protège tout l'OS, mais se met en
+#      place à l'installation de Debian (LVM chiffré). Voir docs/ENCRYPTION.md.
+#      NE PEUT PAS être ajouté proprement après coup par un script.
+#    - Ce COFFRE                        -> un conteneur LUKS2 (fichier ou
+#      partition) qui protège les secrets. Non destructif, scriptable, ici.
+#
+#      ghost-vault status
+#      sudo ghost-vault create [--size 2G] [--device /dev/nvme0n1p4]
+#      sudo ghost-vault open        # demande la phrase, monte, relie les secrets
+#      sudo ghost-vault close       # démonte et referme
+#      sudo ghost-vault protect ~/.ssh
+#      ghost-vault list
+#
+#  Rien n'est jamais détruit : `protect` sauvegarde avant de déplacer.
+# ============================================================================
+set -uo pipefail
+
+SHARE="${GHOSTBOARD_SHARE:-/usr/share/ghostboard}"
+[[ -f "$SHARE/palette.sh" ]] && . "$SHARE/palette.sh" 2>/dev/null || true
+
+TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+USER_HOME="$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)"; USER_HOME="${USER_HOME:-$HOME}"
+
+VAULT_IMG="${GHOSTBOARD_VAULT_IMG:-/var/lib/ghostboard/vault.img}"
+VAULT_DEV="${GHOSTBOARD_VAULT_DEV:-}"          # si défini : partition réelle
+MAPPER="${GHOSTBOARD_VAULT_MAPPER:-ghostboard-vault}"
+MOUNT="${GHOSTBOARD_VAULT_MOUNT:-$USER_HOME/.local/share/ghostboard/vault}"
+SIZE="2G"
+
+# Secrets protégés par défaut (relatifs à $USER_HOME). Chacun devient un lien
+# vers le coffre une fois ouvert.
+DEFAULT_PROTECT=(".claude" ".config/anthropic" ".config/ghostboard" \
+                 ".cache/ghostboard/recon")
+
+# --- couleurs ---------------------------------------------------------------
+c() { [[ -t 1 && -z "${NO_COLOR:-}" ]] || { printf '%s' "$2"; return; }
+      local h="${1#\#}"; printf '\033[38;2;%d;%d;%dm%s\033[0m' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}" "$2"; }
+ok()    { c "${GB_ACCENT:-#A855F7}" "$1"; }
+bad()   { c "${GB_INPUT:-#FF4D8D}" "$1"; }
+faint() { c "${GB_TEXT_DIM:-#6E6880}" "$1"; }
+die()   { echo "$(bad "ghost-vault: $1")" >&2; exit "${2:-1}"; }
+need_root() { [[ "$(id -u)" -eq 0 ]] || die "cette action doit être lancée avec sudo"; }
+have()  { command -v "$1" >/dev/null 2>&1; }
+
+backing_is_device() { [[ -n "$VAULT_DEV" ]]; }
+mapper_path() { echo "/dev/mapper/$MAPPER"; }
+is_open()  { [[ -e "$(mapper_path)" ]]; }
+is_mounted() { mountpoint -q "$MOUNT" 2>/dev/null; }
+
+# Renvoie le périphérique bloc à chiffrer/ouvrir : la partition, ou un loop sur
+# le fichier conteneur (créé à la volée pour open).
+resolve_loop() {
+  if backing_is_device; then echo "$VAULT_DEV"; return; fi
+  local existing; existing="$(losetup -j "$VAULT_IMG" 2>/dev/null | cut -d: -f1 | head -1)"
+  if [[ -n "$existing" ]]; then echo "$existing"; else losetup -f --show "$VAULT_IMG"; fi
+}
+drop_loop() {
+  backing_is_device && return 0
+  local l; l="$(losetup -j "$VAULT_IMG" 2>/dev/null | cut -d: -f1 | head -1)"
+  [[ -n "$l" ]] && losetup -d "$l" 2>/dev/null || true
+}
+
+require_cryptsetup() {
+  have cryptsetup || die "cryptsetup absent — sudo apt install cryptsetup"
+}
+
+# ---------------------------------------------------------------------------
+cmd_status() {
+  echo "$(ok '  GHOSTBOARD — coffre chiffré')"
+  echo "$(faint '  ────────────────────────────────')"
+  local backing; backing="$(backing_is_device && echo "$VAULT_DEV" || echo "$VAULT_IMG")"
+  if backing_is_device; then printf '  %-14s %s\n' "Support" "$(faint "partition $VAULT_DEV")"
+  elif [[ -f "$VAULT_IMG" ]]; then
+    printf '  %-14s %s\n' "Support" "$(faint "fichier $VAULT_IMG ($(du -h "$VAULT_IMG" 2>/dev/null | cut -f1))")"
+  else printf '  %-14s %s\n' "Support" "$(bad 'aucun coffre — sudo ghost-vault create')"; fi
+
+  if have cryptsetup && [[ -e "$backing" || -f "$VAULT_IMG" ]]; then
+    local probe; probe="$(resolve_loop 2>/dev/null)"
+    if [[ -n "$probe" ]] && cryptsetup isLuks "$probe" 2>/dev/null; then
+      printf '  %-14s %s\n' "Format" "$(ok 'LUKS2 valide')"
+    fi
+    drop_loop
+  fi
+  printf '  %-14s %s\n' "État" "$(is_open && ok 'ouvert' || faint 'fermé')"
+  if is_mounted; then printf '  %-14s %s\n' "Monté sur" "$(ok "$MOUNT")"; fi
+
+  echo "$(faint '  Secrets protégés :')"
+  local any=0
+  for rel in "${DEFAULT_PROTECT[@]}"; do
+    local p="$USER_HOME/$rel"
+    if [[ -L "$p" && "$(readlink -f "$p")" == "$MOUNT"/* ]]; then
+      printf '    %s %s\n' "$(ok '●')" "$rel"; any=1
+    elif [[ -e "$p" ]]; then
+      printf '    %s %s\n' "$(faint '○')" "$(faint "$rel (non protégé)")"
+    fi
+  done
+  [[ "$any" -eq 0 ]] && echo "$(faint '    (aucun — sudo ghost-vault open puis protect)')"
+}
+
+cmd_create() {
+  need_root; require_cryptsetup
+  if backing_is_device; then
+    [[ -b "$VAULT_DEV" ]] || die "$VAULT_DEV n'est pas un périphérique bloc"
+    echo "$(bad "  ATTENTION : $VAULT_DEV va être formaté en LUKS. Tout son contenu sera perdu.")"
+    read -r -p "  Taper le nom du périphérique pour confirmer : " reply
+    [[ "$reply" == "$VAULT_DEV" ]] || die "confirmation incorrecte — rien fait"
+  else
+    [[ -f "$VAULT_IMG" ]] && die "un conteneur existe déjà : $VAULT_IMG (supprime-le pour recréer)"
+    mkdir -p "$(dirname "$VAULT_IMG")"
+    echo "$(faint "  allocation de $SIZE : $VAULT_IMG")"
+    fallocate -l "$SIZE" "$VAULT_IMG" 2>/dev/null || \
+      dd if=/dev/zero of="$VAULT_IMG" bs=1M count="$(( ${SIZE%[GgMm]} * 1024 ))" status=none
+    chmod 600 "$VAULT_IMG"
+  fi
+
+  local dev; dev="$(resolve_loop)"
+  echo "$(faint '  Choisis une phrase de passe pour le coffre (elle protège tes clés).')"
+  cryptsetup luksFormat --type luks2 "$dev" || { drop_loop; die "luksFormat a échoué"; }
+  echo "$(ok '  entête LUKS2 écrite')"
+  echo "$(faint '  ouverture et formatage ext4…')"
+  cryptsetup luksOpen "$dev" "$MAPPER" || { drop_loop; die "luksOpen a échoué (device-mapper ?)"; }
+  mkfs.ext4 -q -L GHOSTVAULT "$(mapper_path)" || { cryptsetup luksClose "$MAPPER"; drop_loop; die "mkfs a échoué"; }
+  cryptsetup luksClose "$MAPPER"; drop_loop
+  echo "$(ok '  coffre créé.')  $(faint 'Ouvre-le : sudo ghost-vault open')"
+}
+
+cmd_open() {
+  need_root; require_cryptsetup
+  is_mounted && { echo "$(faint '  déjà ouvert et monté')"; return 0; }
+  local dev; dev="$(resolve_loop)"
+  cryptsetup isLuks "$dev" 2>/dev/null || { drop_loop; die "aucun coffre LUKS ici (sudo ghost-vault create)"; }
+  is_open || cryptsetup luksOpen "$dev" "$MAPPER" || { drop_loop; die "phrase incorrecte ou device-mapper indisponible"; }
+  install -d -m 0700 -o "$TARGET_USER" "$MOUNT"
+  mount "$(mapper_path)" "$MOUNT" || { cryptsetup luksClose "$MAPPER"; drop_loop; die "montage impossible"; }
+  chown "$TARGET_USER" "$MOUNT"
+  _link_secrets
+  echo "$(ok "  coffre ouvert sur $MOUNT")"
+}
+
+cmd_close() {
+  need_root
+  is_mounted && { umount "$MOUNT" || die "démontage impossible (fichiers ouverts ?)"; }
+  is_open && cryptsetup luksClose "$MAPPER" 2>/dev/null || true
+  drop_loop
+  echo "$(ok '  coffre fermé.')  $(faint 'Les liens de secrets pointent dans le vide jusqu'"'"'à la prochaine ouverture.')"
+}
+
+# Relie chaque secret protégé vers le coffre. Non destructif : à la première
+# protection d'un dossier existant, son contenu est DÉPLACÉ dans le coffre puis
+# remplacé par un lien ; une sauvegarde horodatée est gardée.
+_link_secrets() {
+  for rel in "${DEFAULT_PROTECT[@]}"; do
+    local src="$USER_HOME/$rel" dst="$MOUNT/$rel"
+    [[ -L "$src" && "$(readlink -f "$src")" == "$MOUNT"/* ]] && continue  # déjà protégé
+    install -d -m 0700 -o "$TARGET_USER" "$(dirname "$dst")"
+    if [[ -e "$src" && ! -L "$src" ]]; then
+      if [[ ! -e "$dst" ]]; then
+        cp -a "$src" "$src.pre-vault.$(date +%s)"   # filet de sécurité
+        mv "$src" "$dst"
+      else
+        mv "$src" "$src.replaced-by-vault.$(date +%s)"  # conflit : on garde l'ancien
+      fi
+    fi
+    [[ -e "$dst" ]] || install -d -m 0700 -o "$TARGET_USER" "$dst"
+    ln -sfn "$dst" "$src"
+    chown -h "$TARGET_USER" "$src"
+  done
+}
+
+cmd_protect() {
+  local path="${1:-}"; [[ -n "$path" ]] || die "usage: ghost-vault protect <chemin>"
+  need_root
+  is_mounted || die "ouvre le coffre d'abord : sudo ghost-vault open"
+  local abs; abs="$(readlink -f "$path" 2>/dev/null || echo "$path")"
+  case "$abs" in "$USER_HOME"/*) ;; *) die "seul un chemin sous $USER_HOME peut être protégé" ;; esac
+  local rel="${abs#"$USER_HOME"/}" dst="$MOUNT/$rel"
+  install -d -m 0700 -o "$TARGET_USER" "$(dirname "$dst")"
+  if [[ -e "$abs" && ! -L "$abs" ]]; then
+    cp -a "$abs" "$abs.pre-vault.$(date +%s)"; mv "$abs" "$dst"
+  fi
+  [[ -e "$dst" ]] || install -d -m 0700 -o "$TARGET_USER" "$dst"
+  ln -sfn "$dst" "$abs"; chown -h "$TARGET_USER" "$abs"
+  echo "$(ok "  protégé : $rel")  $(faint '(sauvegarde .pre-vault gardée)')"
+}
+
+cmd_list() {
+  echo "$(faint '  Secrets protégés par défaut :')"
+  for rel in "${DEFAULT_PROTECT[@]}"; do
+    local p="$USER_HOME/$rel"
+    local state; state="$(faint 'absent')"
+    [[ -e "$p" ]] && state="$(faint 'présent, non protégé')"
+    [[ -L "$p" && "$(readlink -f "$p" 2>/dev/null)" == "$MOUNT"/* ]] && state="$(ok 'protégé')"
+    printf '    %-26s %s\n' "$rel" "$state"
+  done
+}
+
+case "${1:-status}" in
+  status)  cmd_status ;;
+  create)  shift; while [[ $# -gt 0 ]]; do case "$1" in
+             --size) SIZE="$2"; shift 2;; --device) VAULT_DEV="$2"; shift 2;;
+             *) die "option inconnue : $1";; esac; done; cmd_create ;;
+  open)    cmd_open ;;
+  close)   cmd_close ;;
+  protect) shift; cmd_protect "${1:-}" ;;
+  list)    cmd_list ;;
+  -h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "commande inconnue : $1  (status|create|open|close|protect|list)" 2 ;;
+esac

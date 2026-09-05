@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+"""
+ghost-llm-proxy — passerelle Anthropic Messages API  ->  LM Studio (OpenAI).
+
+Claude Code parle l'API Anthropic (POST /v1/messages) ; LM Studio parle l'API
+OpenAI (POST /v1/chat/completions). Les deux formats sont INCOMPATIBLES. Cette
+passerelle traduit dans les deux sens, pour que Claude Code puisse être pointé
+sur le modèle local via ANTHROPIC_BASE_URL.
+
+    ghost-llm-proxy [--port 8788] [--lm http://127.0.0.1:1234/v1]
+
+Sans dépendance (urllib + http.server). Traduit :
+  - requête Anthropic -> requête OpenAI (system, messages, tools, tool_choice)
+  - réponse OpenAI -> réponse Anthropic (blocs de contenu, tool_use, usage)
+  - streaming OpenAI (SSE) -> événements SSE Anthropic (message_start,
+    content_block_delta text_delta / input_json_delta, message_stop)
+
+HONNÊTETÉ : c'est un pont best-effort et NON officiel. Un petit modèle local
+(Dolphin 7-8B) fait mal la boucle agentique de Claude Code (usage d'outils,
+édition). Le chat et l'édition simple passent ; l'agentique complexe est faible.
+Voir docs/CLAUDE-CODE-LOCAL.md.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def log(*a):
+    sys.stderr.write("[ghost-llm-proxy] " + " ".join(str(x) for x in a) + "\n")
+
+
+# ---------------------------------------------------------------------------
+#  Config
+# ---------------------------------------------------------------------------
+def load_lm_config():
+    base = os.environ.get("GHOSTBOARD_LLM_BASE", "http://127.0.0.1:1234/v1").rstrip("/")
+    model = os.environ.get("GHOSTBOARD_LLM_MODEL", "auto")
+    key = os.environ.get("GHOSTBOARD_LLM_KEY", "lm-studio")
+    from pathlib import Path
+    for path in (Path.home() / ".config/ghostboard/llm.json",
+                 Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard")) / "llm.json"):
+        try:
+            d = json.loads(path.read_text())
+            base = os.environ.get("GHOSTBOARD_LLM_BASE", d.get("base", base)).rstrip("/")
+            model = os.environ.get("GHOSTBOARD_LLM_MODEL", d.get("model", model))
+            break
+        except Exception:
+            continue
+    return {"base": base, "model": model, "key": key}
+
+
+def resolve_model(cfg):
+    if cfg["model"] and cfg["model"] != "auto":
+        return cfg["model"]
+    try:
+        req = urllib.request.Request(cfg["base"] + "/models",
+                                     headers={"Authorization": f"Bearer {cfg['key']}"})
+        data = json.loads(urllib.request.urlopen(req, timeout=8).read())
+        ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
+        for m in ids:
+            if "dolphin" in m.lower():
+                return m
+        return ids[0] if ids else "local-model"
+    except Exception:
+        return "local-model"
+
+
+# ---------------------------------------------------------------------------
+#  Traduction  Anthropic -> OpenAI
+# ---------------------------------------------------------------------------
+def _system_text(system):
+    if not system:
+        return None
+    if isinstance(system, str):
+        return system
+    # liste de blocs {type:text,text}
+    return "\n".join(b.get("text", "") for b in system if isinstance(b, dict))
+
+
+def anthropic_to_openai_messages(system, messages):
+    out = []
+    sys_txt = _system_text(system)
+    if sys_txt:
+        out.append({"role": "system", "content": sys_txt})
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        # contenu en blocs
+        text_parts = []
+        tool_calls = []
+        tool_results = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text":
+                text_parts.append(b.get("text", ""))
+            elif t == "tool_use":  # assistant a appelé un outil
+                tool_calls.append({
+                    "id": b.get("id", "call_" + uuid.uuid4().hex[:8]),
+                    "type": "function",
+                    "function": {"name": b.get("name", ""),
+                                 "arguments": json.dumps(b.get("input", {}))},
+                })
+            elif t == "tool_result":  # user renvoie le résultat d'un outil
+                rc = b.get("content", "")
+                if isinstance(rc, list):
+                    rc = "\n".join(x.get("text", "") if isinstance(x, dict) else str(x)
+                                   for x in rc)
+                tool_results.append((b.get("tool_use_id", ""), str(rc)))
+            elif t == "image":
+                text_parts.append("[image omitted — local model has no vision]")
+        # Les tool_result deviennent des messages role=tool séparés.
+        if tool_results:
+            for tid, rc in tool_results:
+                out.append({"role": "tool", "tool_call_id": tid, "content": rc})
+            leftover = "\n".join(tp for tp in text_parts if tp)
+            if leftover:
+                out.append({"role": role, "content": leftover})
+        else:
+            msg = {"role": role, "content": "\n".join(tp for tp in text_parts if tp)}
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+                if not msg["content"]:
+                    msg["content"] = None
+            out.append(msg)
+    return out
+
+
+def anthropic_tools_to_openai(tools):
+    out = []
+    for t in tools or []:
+        out.append({"type": "function", "function": {
+            "name": t.get("name", ""),
+            "description": t.get("description", ""),
+            "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+        }})
+    return out
+
+
+def anthropic_tool_choice_to_openai(tc):
+    if not tc:
+        return None
+    t = tc.get("type")
+    if t == "auto":
+        return "auto"
+    if t == "any":
+        return "required"
+    if t == "tool":
+        return {"type": "function", "function": {"name": tc.get("name", "")}}
+    if t == "none":
+        return "none"
+    return None
+
+
+_STOP = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use",
+         "content_filter": "end_turn", "function_call": "tool_use"}
+
+
+def build_openai_request(body, model):
+    req = {
+        "model": model,
+        "messages": anthropic_to_openai_messages(body.get("system"), body.get("messages", [])),
+        "max_tokens": body.get("max_tokens", 1024),
+        "stream": bool(body.get("stream")),
+    }
+    if "temperature" in body:
+        req["temperature"] = body["temperature"]
+    if body.get("stop_sequences"):
+        req["stop"] = body["stop_sequences"]
+    tools = anthropic_tools_to_openai(body.get("tools"))
+    if tools:
+        req["tools"] = tools
+        tc = anthropic_tool_choice_to_openai(body.get("tool_choice"))
+        if tc is not None:
+            req["tool_choice"] = tc
+    if req["stream"]:
+        req["stream_options"] = {"include_usage": True}
+    return req
+
+
+# ---------------------------------------------------------------------------
+#  Traduction  OpenAI -> Anthropic
+# ---------------------------------------------------------------------------
+def openai_to_anthropic_response(oai, model):
+    choice = (oai.get("choices") or [{}])[0]
+    msg = choice.get("message", {})
+    blocks = []
+    if msg.get("content"):
+        blocks.append({"type": "text", "text": msg["content"]})
+    for tcall in msg.get("tool_calls") or []:
+        fn = tcall.get("function", {})
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {"_raw": fn.get("arguments", "")}
+        blocks.append({"type": "tool_use", "id": tcall.get("id", "toolu_" + uuid.uuid4().hex[:8]),
+                       "name": fn.get("name", ""), "input": args})
+    if not blocks:
+        blocks.append({"type": "text", "text": ""})
+    usage = oai.get("usage", {})
+    return {
+        "id": "msg_" + uuid.uuid4().hex[:16],
+        "type": "message", "role": "assistant", "model": model,
+        "content": blocks,
+        "stop_reason": _STOP.get(choice.get("finish_reason"), "end_turn"),
+        "stop_sequence": None,
+        "usage": {"input_tokens": usage.get("prompt_tokens", 0),
+                  "output_tokens": usage.get("completion_tokens", 0)},
+    }
+
+
+def sse(event, data):
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+def stream_openai_to_anthropic(resp, model, write):
+    """Consomme le flux OpenAI et écrit les événements SSE Anthropic via write()."""
+    mid = "msg_" + uuid.uuid4().hex[:16]
+    write(sse("message_start", {"type": "message_start", "message": {
+        "id": mid, "type": "message", "role": "assistant", "model": model,
+        "content": [], "stop_reason": None, "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0}}}))
+    write(sse("ping", {"type": "ping"}))
+
+    text_open = False
+    index = 0
+    tools = {}          # idx openai -> {block_index, id, name, args}
+    finish = "stop"
+    out_tokens = 0
+
+    for raw in resp:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        chunk = line[5:].strip()
+        if chunk == "[DONE]":
+            break
+        try:
+            obj = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("usage"):
+            out_tokens = obj["usage"].get("completion_tokens", out_tokens)
+        choice = (obj.get("choices") or [{}])[0]
+        if choice.get("finish_reason"):
+            finish = choice["finish_reason"]
+        delta = choice.get("delta", {})
+
+        piece = delta.get("content")
+        if piece:
+            if not text_open:
+                write(sse("content_block_start", {"type": "content_block_start",
+                      "index": index, "content_block": {"type": "text", "text": ""}}))
+                text_open = True
+            write(sse("content_block_delta", {"type": "content_block_delta",
+                  "index": index, "delta": {"type": "text_delta", "text": piece}}))
+
+        for tc in delta.get("tool_calls") or []:
+            oidx = tc.get("index", 0)
+            slot = tools.get(oidx)
+            if slot is None:
+                if text_open:  # fermer le bloc texte avant d'ouvrir un tool_use
+                    write(sse("content_block_stop", {"type": "content_block_stop", "index": index}))
+                    text_open = False
+                    index += 1
+                slot = {"block_index": index, "id": tc.get("id", "toolu_" + uuid.uuid4().hex[:8]),
+                        "name": (tc.get("function") or {}).get("name", ""), "args": "",
+                        "started": False}
+                tools[oidx] = slot
+                index += 1
+            fn = tc.get("function") or {}
+            if fn.get("name") and not slot["name"]:
+                slot["name"] = fn["name"]
+            if not slot["started"] and slot["name"]:
+                write(sse("content_block_start", {"type": "content_block_start",
+                      "index": slot["block_index"], "content_block": {
+                          "type": "tool_use", "id": slot["id"], "name": slot["name"], "input": {}}}))
+                slot["started"] = True
+            if fn.get("arguments"):
+                slot["args"] += fn["arguments"]
+                if slot["started"]:
+                    write(sse("content_block_delta", {"type": "content_block_delta",
+                          "index": slot["block_index"],
+                          "delta": {"type": "input_json_delta", "partial_json": fn["arguments"]}}))
+
+    if text_open:
+        write(sse("content_block_stop", {"type": "content_block_stop", "index": index}))
+    for slot in tools.values():
+        if slot["started"]:
+            write(sse("content_block_stop", {"type": "content_block_stop",
+                  "index": slot["block_index"]}))
+    write(sse("message_delta", {"type": "message_delta",
+          "delta": {"stop_reason": _STOP.get(finish, "end_turn"), "stop_sequence": None},
+          "usage": {"output_tokens": out_tokens}}))
+    write(sse("message_stop", {"type": "message_stop"}))
+
+
+# ---------------------------------------------------------------------------
+#  Serveur HTTP (API Anthropic entrante)
+# ---------------------------------------------------------------------------
+class Proxy(BaseHTTPRequestHandler):
+    cfg = None          # rempli par main()
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _err(self, code, msg):
+        self._json(code, {"type": "error", "error": {"type": "api_error", "message": msg}})
+
+    def do_GET(self):
+        path = self.path.split("?")[0].rstrip("/")
+        if path.endswith("/models"):
+            model = resolve_model(self.cfg)
+            self._json(200, {"data": [{"id": model, "type": "model",
+                       "display_name": model, "created_at": "2024-01-01T00:00:00Z"}],
+                       "has_more": False})
+        elif path in ("", "/health"):
+            self._json(200, {"status": "ok", "proxy": "ghost-llm-proxy",
+                             "lm_studio": self.cfg["base"]})
+        else:
+            self._err(404, f"unknown path {path}")
+
+    def do_POST(self):
+        path = self.path.split("?")[0].rstrip("/")
+        n = int(self.headers.get("Content-Length", "0"))
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except json.JSONDecodeError:
+            return self._err(400, "invalid JSON")
+
+        if path.endswith("/count_tokens"):
+            # Estimation ~4 caractères/token : Claude Code s'en sert pour jauger.
+            chars = len(json.dumps(body.get("messages", []))) + len(_system_text(body.get("system")) or "")
+            return self._json(200, {"input_tokens": max(1, chars // 4)})
+
+        if not path.endswith("/messages"):
+            return self._err(404, f"unknown path {path}")
+
+        model = resolve_model(self.cfg)
+        oai_req = build_openai_request(body, model)
+        url = self.cfg["base"] + "/chat/completions"
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {self.cfg['key']}"}
+        data = json.dumps(oai_req).encode()
+
+        try:
+            upstream = urllib.request.urlopen(
+                urllib.request.Request(url, data=data, headers=headers, method="POST"),
+                timeout=600)
+        except urllib.error.HTTPError as e:
+            return self._err(502, f"LM Studio error {e.code}: {e.read().decode('utf-8','replace')[:200]}")
+        except (urllib.error.URLError, OSError) as e:
+            return self._err(502, f"LM Studio unreachable ({self.cfg['base']}): {e}")
+
+        if oai_req["stream"]:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            def write(b):
+                try:
+                    self.wfile.write(b)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    raise
+            try:
+                stream_openai_to_anthropic(upstream, model, write)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        else:
+            try:
+                oai = json.loads(upstream.read().decode("utf-8", "replace"))
+            except json.JSONDecodeError:
+                return self._err(502, "LM Studio returned invalid JSON")
+            self._json(200, openai_to_anthropic_response(oai, model))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Passerelle Anthropic -> LM Studio (OpenAI)")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("GHOSTBOARD_PROXY_PORT", "8788")))
+    ap.add_argument("--lm", help="base LM Studio (défaut : config/llm.json)")
+    ap.add_argument("--host", default="127.0.0.1")
+    args = ap.parse_args()
+
+    cfg = load_lm_config()
+    if args.lm:
+        cfg["base"] = args.lm.rstrip("/")
+    Proxy.cfg = cfg
+    srv = ThreadingHTTPServer((args.host, args.port), Proxy)
+    log(f"prêt sur http://{args.host}:{args.port}  ->  LM Studio {cfg['base']}")
+    log(f"modèle local : {resolve_model(cfg)}")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
