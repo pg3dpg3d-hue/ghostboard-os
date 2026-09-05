@@ -368,6 +368,8 @@ ghost-bruce list                 # detected boards, USB bridge, model, serial
 ghost-bruce console              # colour-coded serial console — Ctrl+] to quit
 ghost-bruce send "help"          # one command, print the reply
 ghost-bruce webui                # start the board's WebUI and open it
+ghost-bruce flash                # build + flash the GHOSTBOARD companion firmware
+ghost-bruce flash --build-only   # compile only (verify it builds)
 ghost-bruce -d /dev/ttyUSB0 info
 ```
 
@@ -386,6 +388,37 @@ pink** — the same convention as everywhere else in the OS.
 ```bash
 bash tests/test-bruce.sh         # 12 detection checks against a fake sysfs tree
 ```
+
+---
+
+## Companion firmware
+
+The ESP32 companion runs its own firmware, in
+[`companion/firmware/`](companion/firmware/) — a PlatformIO project with a menu
+and two modules on the board's OLED:
+
+- **WiFi Scan** — passive reconnaissance (SSID, RSSI, BSSID, channel). No RF
+  emission.
+- **Deauther** — a Wi-Fi **denial-of-service** test: it injects 802.11 deauth
+  frames to force clients off an access point.
+
+> **Deauther is authorized-use-only.** Deauth emission is illegal against
+> networks you don't own or aren't permitted to test in much of the world. The
+> firmware gates the **first** emission behind an `AUTHORIZED USE ONLY` screen
+> and a ~1.5 s long-press confirmation, re-asked on every entry into the module.
+> Scanning stays free. This mirrors the RECON module's scope barrier: the deck
+> makes the operator's authorization an explicit, conscious step.
+
+The board's OLED is monochrome, so the palette shows through the **NeoPixel**:
+its colours are generated from `brand/palette.toml` — accent violet for
+scan/activity, input pink for deauth emission — never hard-coded
+(`companion/firmware/tools/gen-theme.py`). Pins live in `include/config.h` and
+must be checked for your board. Flash from the deck with `ghost-bruce flash`.
+
+The scan/injection logic is the user's own firmware, reused as-is; the only
+changes are the authorization gate, a fixed out-of-bounds write in the deauth
+frame, a unified AP SSID, and the menu/return glue — all tagged `[GB]` in the
+source.
 
 ---
 
@@ -410,6 +443,9 @@ tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-run,
                             build-boot-preview.py
 camera-audit/               RECON module — Textual TUI wrapping the auditkit
                             camera scanner (bridge, theme, scope, report server)
+companion/firmware/         ESP32 companion firmware (PlatformIO): WiFi Scan +
+                            Deauther, palette-driven NeoPixel, flashed via
+                            `ghost-bruce flash`
 install/                    orchestrator, lib/common.sh, steps/
 tests/                      test-mcp.js, test-bruce.sh
 ```
@@ -470,6 +506,7 @@ bash tests/run-all.sh
 | `tests/test-proxy.sh` | `ghost-llm-proxy` translating Anthropic Messages API ↔ OpenAI, against a mock LM Studio — non-streaming, streaming (text reconstitutes exactly), tool-call round-trip |
 | `tests/test-vault.sh` | `ghost-vault` — status, arg errors, and a real LUKS2 header write (open/mount is deck-verified) |
 | `tests/test-llm.sh` | `ghost-llm` against a mock OpenAI/LM Studio server — model listing, Dolphin auto-detect, streaming, pipe, override, dead-endpoint error |
+| `tests/test-firmware.sh` | ESP32 companion firmware — palette-derived NeoPixel colours, deauth buffer-overflow fix, the authorization gate, brace balance, `ghost-bruce flash` wiring (compiles for real if PlatformIO is present) |
 | `camera-audit/tests/test_units.py` | RECON module — scope barrier, Finding normalisation, demo backend, report (no deps) |
 | `tests/test-desktop.js` | Drives the generated demo desktop in a real browser — terminal, simulated serial console, palette ranking, desktop switching, window drag/minimise/close. Skips cleanly with no browser. |
 

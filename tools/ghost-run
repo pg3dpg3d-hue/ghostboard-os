@@ -49,6 +49,7 @@ GHOST_COMMANDS = [
     ("ghost-perf", "Auditer chaque optimisation sur le système vivant", True),
     ("ghost-bench", "Mesurer boot, RAM, CPU, NVMe", True),
     ("ghost-bruce list", "Lister les cartes ESP32 branchées", True),
+    ("ghost-bruce flash", "Flasher le firmware compagnon (WiFi Scan + Deauther)", True),
     ("ghost-theme apply", "Régénérer tout le thème depuis la palette", True),
     ("ghost-theme check", "Vérifier contrastes et cohérence de la palette", True),
     ("ghost-boot-splash", "Rejouer l'animation d'allumage", False),
