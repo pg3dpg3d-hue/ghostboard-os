@@ -161,6 +161,18 @@ tools/gen-wordlist.py            # écrit include/wordlist.h
 tools/gen-wordlist.py --check    # échoue si le header est périmé (tests)
 ```
 
+La liste fournie par défaut (~2700 entrées) est produite par un outil d'autorat,
+`tools/make-wordlist.py` : mots de passe les plus courants + racines FR/EN
+déclinées (mot + année/chiffres, capitalisation) + suites clavier/numériques.
+Elle **ne contient pas** les clés par défaut des box (aléatoires, uniques par
+appareil) : un dictionnaire ne trouve qu'une clé **faible ou courante**. Sur
+ESP32 chaque essai prend quelques secondes ⇒ ~2700 essais = plusieurs heures.
+
+```sh
+tools/make-wordlist.py           # régénère data/wordlist.txt (liste par défaut)
+tools/make-wordlist.py --max 800 # version courte, plus rapide à parcourir
+```
+
 Règles de génération : WPA impose des clés de **8 à 63 caractères** — les entrées
 hors plage sont écartées (impossibles comme clé WPA), les doublons supprimés,
 l'ordre conservé. La liste tient en flash (≈4 Mo) ; pour un très gros dictionnaire
