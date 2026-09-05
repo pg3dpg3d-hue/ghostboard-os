@@ -14,6 +14,7 @@
 #include "beaconspam.h"
 #include "evilportal.h"
 #include "sniffer.h"
+#include "authtest.h"
 #include "blespam.h"
 #include "hwstub.h"
 
@@ -26,6 +27,7 @@ static const Module WIFI[] = {
     {"Beacon Spam",     BeaconSpam::setup,       BeaconSpam::loop},
     {"Evil Portal",     EvilPortal::setup,       EvilPortal::loop},
     {"Sniffer",         Sniffer::setup,          Sniffer::loop},
+    {"Auth Test",       AuthTest::setup,         AuthTest::loop},
 };
 static const Module BLE[] = {
     {"BLE Spam",        BleSpam::setup,          BleSpam::loop},

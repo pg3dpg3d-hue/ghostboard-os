@@ -32,6 +32,7 @@ ce projet garde sa propre licence.
 | **Beacon Spam** | Diffusion de **faux SSID** | balises 802.11 | ESP32 seul |
 | **Evil Portal** | AP factice + **portail captif** capturant les identifiants | AP ouvert | ESP32 seul |
 | **Sniffer** | Comptage de trames (**passif**, mode promiscuous) | Aucune | ESP32 seul |
+| **Auth Test** | Teste la robustesse d'une clé WPA (dictionnaire en ligne) | tentatives d'auth | ESP32 seul |
 
 ### Bluetooth
 
@@ -57,18 +58,25 @@ câblée : chaque entrée affiche un écran « Connect &lt;puce&gt; ». Voir
 
 ### ⚠️ Émission — usage autorisé uniquement
 
-**Deauther, Beacon Spam, Evil Portal et BLE Spam émettent.** Perturber un réseau
-ou piéger des utilisateurs tiers est illégal dans beaucoup de pays (brouillage /
-interférence intentionnelle, capture de données). **Ne les utilise que sur ton
-propre matériel, ou avec une autorisation écrite.**
+**Deauther, Beacon Spam, Evil Portal et BLE Spam émettent** ; **Auth Test**
+tente de s'authentifier. Perturber un réseau, piéger des utilisateurs tiers ou
+s'authentifier sans autorisation est illégal dans beaucoup de pays (brouillage /
+interférence intentionnelle, capture de données, accès non autorisé). **Ne les
+utilise que sur ton propre matériel, ou avec une autorisation écrite.**
 
-Chaque module d'émission impose un **écran de confirmation** avant la première
-émission (barrière partagée, `authgate.cpp`) :
+- **Auth Test** est un audit de robustesse : il essaie une liste de mots de passe
+  contre un réseau WPA pour voir s'il cède. Sur **ton** réseau = légitime. Sur un
+  réseau tiers = accès illégal. La liste embarquée est courte (démo) ; un vrai
+  dictionnaire viendra de la carte SD en phase 2.
+
+Chaque module actif impose un **écran de confirmation** avant la première action
+(barrière partagée, `authgate.cpp`) :
 
 1. `RIGHT` pour démarrer → l'écran **AUTHORIZED USE ONLY** apparaît.
 2. **Maintiens `RIGHT` ~1,5 s** pour confirmer (une jauge se remplit). `LEFT`
    annule.
-3. L'émission ne démarre qu'après confirmation, redemandée à chaque entrée.
+3. L'action (émission ou essai d'auth) ne démarre qu'après confirmation,
+   redemandée à chaque entrée.
 
 **Scan** et **Sniffer** restent libres : ce sont de la reconnaissance passive,
 aucune émission.

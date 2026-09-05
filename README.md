@@ -397,7 +397,8 @@ The ESP32 companion runs its own firmware, in
 [`companion/firmware/`](companion/firmware/) — a PlatformIO project with a
 two-level menu (categories → modules) on the board's OLED:
 
-- **WiFi** — Scan (passive), Deauther (DoS), Beacon Spam, Evil Portal, Sniffer.
+- **WiFi** — Scan (passive), Deauther (DoS), Beacon Spam, Evil Portal, Sniffer,
+  Auth Test (WPA dictionary — test your own network's key strength).
 - **Bluetooth** — BLE Spam (Apple / Swift Pair / Fast Pair pairing floods).
 - **SubGHz · Infrared · NRF24 · NFC · iButton** — present in the menu but inert
   until the matching chip (CC1101, IR LED, NRF24L01, ST25R3916, 1-Wire) is wired;
@@ -407,13 +408,15 @@ The WiFi/BLE modules are **clean-room reimplementations** inspired by the
 [ESP-HACK](https://github.com/Teapot174/ESP-HACK) firmware (AGPL-3.0) — no code
 copied, so GHOSTBOARD keeps its own licence. ESP-HACK's games are not ported.
 
-> **The emitting modules are authorized-use-only.** Deauther, Beacon Spam, Evil
-> Portal and BLE Spam all transmit; disrupting networks or trapping third-party
-> users is illegal in much of the world. Every emitting module gates its **first**
-> emission behind a shared `AUTHORIZED USE ONLY` screen and a ~1.5 s long-press
-> confirmation, re-asked on every entry (`companion/firmware/src/authgate.cpp`).
-> Scan and Sniffer stay free — passive reconnaissance, no emission. This mirrors
-> the RECON module's scope barrier: authorization is an explicit, conscious step.
+> **The active modules are authorized-use-only.** Deauther, Beacon Spam, Evil
+> Portal and BLE Spam transmit; Auth Test tries to authenticate (a WPA
+> dictionary test of your own network's key). Disrupting networks, trapping
+> third-party users, or authenticating without permission is illegal in much of
+> the world. Every active module gates its **first** action behind a shared
+> `AUTHORIZED USE ONLY` screen and a ~1.5 s long-press confirmation, re-asked on
+> every entry (`companion/firmware/src/authgate.cpp`). Scan and Sniffer stay free
+> — passive reconnaissance, no emission. This mirrors the RECON module's scope
+> barrier: authorization is an explicit, conscious step.
 
 The board's OLED is monochrome, so the palette shows through the **NeoPixel**:
 its colours are generated from `brand/palette.toml` — accent violet for

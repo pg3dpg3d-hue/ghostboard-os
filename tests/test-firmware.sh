@@ -35,12 +35,12 @@ ck "attaque gatée derrière 'authorized'" $?
 
 echo
 echo "firmware — modules ESP-HACK réimplémentés (clean-room)"
-for m in beaconspam evilportal sniffer blespam; do
+for m in beaconspam evilportal sniffer blespam authtest; do
   [[ -f "$FW/src/modules/$m.cpp" ]]; ck "module $m présent" $?
 done
-# Chaque module d'ÉMISSION doit passer par le gate d'autorisation partagé.
-for m in beaconspam evilportal blespam; do
-  grep -q 'AuthGate::confirm' "$FW/src/modules/$m.cpp"; ck "$m : gaté avant émission" $?
+# Chaque module actif (émission ou tentative d'auth) passe par le gate partagé.
+for m in beaconspam evilportal blespam authtest; do
+  grep -q 'AuthGate::confirm' "$FW/src/modules/$m.cpp"; ck "$m : gaté avant action" $?
 done
 # Le sniffer est passif : pas de gate, pas d'émission.
 ! grep -q 'esp_wifi_80211_tx\|AuthGate::confirm' "$FW/src/modules/sniffer.cpp"
