@@ -220,6 +220,31 @@ ghost-crack run maison.pcap               # crack hors-ligne -> clé
 ghost-crack info          # aircrack-ng / pyserial / carte détectés
 ```
 
+### Brute-force à la volée (sans wordlist)
+
+Quand tu connais la *forme* de la clé (p. ex. les 8 chiffres d'une box), pas
+besoin de dictionnaire : `ghost-crack brute` **génère les combinaisons une par
+une et les envoie directement à aircrack-ng** (`-w -`). Chaque candidat est
+testé **hors-ligne** puis **jeté** — rien n'est jamais écrit sur disque — jusqu'à
+trouver la clé. C'est l'équivalent deck du module carte *Brute Force*, mais
+hors-ligne (milliers de clés/s au lieu de ~4 s/essai en ligne).
+
+```sh
+ghost-crack brute maison.pcap --charset digits --min 8 --max 8   # 8 chiffres
+ghost-crack brute maison.pcap --charset alnum  --min 8 --max 8   # a-z0-9
+ghost-crack brute maison.pcap --chars "0123456789" --min 8 --max 10
+```
+
+Charsets : `digits · lower · upper · alpha · alnum · alnumup`, ou `--chars` sur
+mesure. WPA impose ≥ 8 caractères. Le BSSID est lu dans le `.pcap` (sinon `-b`).
+Au-delà d'un espace réaliste (~5 milliards), il **refuse sans `--force`** : un
+charset large sur 8+ caractères, c'est des années — là il faut une wordlist ou
+une forme de clé plus précise.
+
+> ⚠️ La génération est instantanée ; le mur, c'est le **nombre** de combinaisons.
+> `alnum` sur 8 = ~2,8×10¹² essais. Un brute-force n'a de sens que sur un petit
+> espace connu ; sinon c'est `ghost-crack run` avec une wordlist ciblée.
+
 Le `.pcap` est standard (DLT 105, 802.11) : lisible aussi par Wireshark,
 hcxtools, etc. Le protocole série `GBHS-*` (émis par le firmware) est décrit en
 tête de `tools/ghost-crack` ; `ghost-crack capture --replay <dump.txt>` rejoue
