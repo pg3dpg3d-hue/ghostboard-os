@@ -52,6 +52,7 @@ GHOST_COMMANDS = [
     ("ghost-bruce flash", "Flasher le firmware compagnon (WiFi Scan + Deauther)", True),
     ("ghost-crack info", "Crack WPA hors-ligne : outils et carte détectés", True),
     ("ghost-crack auto -o handshake.pcap", "Handshake carte -> crack -> affiche la clé WPA", True),
+    ("ghost-crack brute handshake.pcap --charset digits", "Brute-force hors-ligne : combinaisons à la volée", True),
     ("ghost-theme apply", "Régénérer tout le thème depuis la palette", True),
     ("ghost-theme check", "Vérifier contrastes et cohérence de la palette", True),
     ("ghost-boot-splash", "Rejouer l'animation d'allumage", False),

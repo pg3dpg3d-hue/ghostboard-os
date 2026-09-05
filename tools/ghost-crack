@@ -12,7 +12,17 @@ limite ~4 s/essai des tests EN LIGNE (Auth Test / Brute Force).
     ghost-crack capture -o x.pcap --replay f  rejoue un dump texte (tests, sans carte)
     ghost-crack run maison.pcap               casse hors-ligne (aircrack-ng + wordlist)
     ghost-crack run x.pcap -w rockyou.txt     avec ta propre wordlist
+    ghost-crack brute x.pcap --charset digits --min 8 --max 8
+                                              GÉNÈRE les combinaisons à la volée
+                                              (aucune wordlist, rien sur disque)
     ghost-crack info                          outils détectés, cartes branchées
+
+`brute` fabrique les candidats en flux et les envoie directement à aircrack-ng
+(`-w -`) : chaque combinaison est testée puis **jetée** (jamais écrite sur
+disque), jusqu'à trouver la clé. Sur le deck, le test est hors-ligne (des
+milliers de clés/s) — sans commune mesure avec les ~4 s/essai EN LIGNE de la
+carte. WPA impose ≥ 8 caractères ; au-delà de ~8, l'espace explose (l'écran
+affiche la taille et refuse un espace irréaliste sans --force).
 
 `auto` est le chemin d'audit complet : la carte a capturé le handshake, tu
 lances `ghost-crack auto -o x.pcap` et il lit le dump série, écrit le .pcap,
@@ -40,9 +50,11 @@ Aucune dépendance pour `info`. `capture` utilise pyserial (sauf --replay) ;
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import tempfile
+import threading
 import os
 import shutil
 import struct
@@ -55,6 +67,23 @@ PALETTE_PATH = Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard"))
 
 # DLT/LINKTYPE 105 = IEEE802_11 (trames 802.11 « nues », sans radiotap).
 LINKTYPE_IEEE802_11 = 105
+
+# Jeux de caractères pour la génération à la volée (brute-force hors-ligne).
+_DIGITS = "0123456789"
+_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_UPPER = _LOWER.upper()
+CHARSETS = {
+    "digits":  _DIGITS,                     # clés box grand public à 8 chiffres
+    "lower":   _LOWER,
+    "upper":   _UPPER,
+    "alpha":   _LOWER + _UPPER,
+    "alnum":   _DIGITS + _LOWER,
+    "alnumup": _DIGITS + _LOWER + _UPPER,
+}
+
+# Garde-fou : au-delà, l'espace est irréaliste à parcourir (des années). On
+# refuse sans --force, comme l'écran d'ETA du module Brute Force de la carte.
+BRUTE_MAX_SPACE = 5_000_000_000
 
 # Wordlist par défaut : celle embarquée dans le firmware (mêmes règles WPA),
 # surchargeable par -w. rockyou reste le classique si présent.
@@ -368,6 +397,110 @@ def cmd_auto(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+#  brute — génération de combinaisons À LA VOLÉE, testées puis jetées
+# ---------------------------------------------------------------------------
+def _bssid_from_pcap(pcap: Path) -> str | None:
+    """Lit le BSSID (addr3) de la première trame du .pcap qu'on a écrit, pour
+    ne pas dépendre d'un -b manuel. Format retourné : aa:bb:cc:dd:ee:ff."""
+    try:
+        b = pcap.read_bytes()
+    except OSError:
+        return None
+    if len(b) < 24 or b[:4] != b"\xd4\xc3\xb2\xa1":   # magic pcap LE
+        return None
+    off = 24                                          # après l'en-tête global
+    if len(b) < off + 16:
+        return None
+    incl = struct.unpack("<I", b[off + 8:off + 12])[0]
+    frame = b[off + 16:off + 16 + incl]
+    if len(frame) >= 22:                              # addr3 = octets 16..21
+        return ":".join(f"{x:02x}" for x in frame[16:22])
+    return None
+
+
+def gen_candidates(chars: str, minlen: int, maxlen: int):
+    """Générateur paresseux : produit chaque combinaison une par une. Rien n'est
+    conservé — le candidat n'existe que le temps d'être testé par aircrack."""
+    for length in range(minlen, maxlen + 1):
+        for combo in itertools.product(chars, repeat=length):
+            yield "".join(combo)
+
+
+def cmd_brute(args) -> int:
+    pcap = Path(args.pcap)
+    if not pcap.is_file():
+        die(f"pcap introuvable : {pcap}")
+
+    chars = args.chars if args.chars else CHARSETS.get(args.charset)
+    if not chars:
+        die(f"charset inconnu : {args.charset} (au choix : {', '.join(CHARSETS)}, "
+            "ou --chars \"...\").")
+    # WPA impose 8..63 caractères : en dessous de 8, aucune clé n'est possible.
+    minlen = max(8, args.min)
+    maxlen = args.max or minlen
+    if maxlen < minlen:
+        die(f"--max ({maxlen}) < min effectif ({minlen}).")
+
+    space = sum(len(chars) ** L for L in range(minlen, maxlen + 1))
+    print(INK.machine("brute-force hors-ligne — génération à la volée") + INK.body(
+        f"  charset={args.charset if not args.chars else 'custom'}({len(chars)}) "
+        f"long={minlen}..{maxlen}"))
+    print(INK.body(f"  espace : {space:,} combinaisons".replace(",", " ")))
+    if space > BRUTE_MAX_SPACE and not args.force:
+        die((f"espace trop grand ({space:,} combinaisons) — des années à ce rythme.\n"
+             "  réduis le charset/longueur, ou force avec --force si tu sais ce que tu fais.")
+            .replace(",", " "))
+
+    if not have("aircrack-ng"):
+        die("aircrack-ng est absent.\n  sudo apt install aircrack-ng")
+
+    bssid = args.bssid or _bssid_from_pcap(pcap)
+    cmd = ["aircrack-ng", "-q", "-w", "-"]
+    if bssid:
+        cmd += ["-b", bssid]
+    cmd.append(str(pcap))
+    print(INK.faint("  " + " ".join(cmd) + "   (candidats via stdin, aucun fichier)"))
+    print(INK.faint("  chaque combinaison est testée puis jetée ; Ctrl+C pour arrêter."))
+
+    key = None
+    stop = threading.Event()
+
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+
+    # Producteur : pousse les candidats dans aircrack en flux. Si aircrack
+    # trouve la clé et se ferme, l'écriture lève BrokenPipe -> on s'arrête.
+    def feed():
+        try:
+            for cand in gen_candidates(chars, minlen, maxlen):
+                if stop.is_set():
+                    break
+                proc.stdin.write(cand + "\n")
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    writer = threading.Thread(target=feed, daemon=True)
+    writer.start()
+
+    try:
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            m = KEY_FOUND_RE.search(line)
+            if m:
+                key = m.group(1)
+        proc.wait()
+    except KeyboardInterrupt:
+        stop.set()
+        proc.terminate()
+        return 130
+    finally:
+        stop.set()
+
+    return report_key(key)
+
+
+# ---------------------------------------------------------------------------
 #  info
 # ---------------------------------------------------------------------------
 def cmd_info(args) -> int:
@@ -417,6 +550,18 @@ def main() -> int:
     p_run.add_argument("-w", "--wordlist", help="dictionnaire (défaut : wordlist du firmware)")
     p_run.add_argument("-b", "--bssid", help="limiter à ce BSSID (aa:bb:cc:dd:ee:ff)")
     p_run.set_defaults(func=cmd_run)
+
+    p_brute = sub.add_parser("brute", help="génère les combinaisons à la volée (hors-ligne)")
+    p_brute.add_argument("pcap", help="fichier .pcap contenant le handshake")
+    p_brute.add_argument("--charset", default="digits",
+                         help=f"jeu de caractères : {', '.join(CHARSETS)} (défaut : digits)")
+    p_brute.add_argument("--chars", help="jeu de caractères personnalisé (prioritaire)")
+    p_brute.add_argument("--min", type=int, default=8, help="longueur min (WPA : >= 8)")
+    p_brute.add_argument("--max", type=int, default=0, help="longueur max (défaut : = min)")
+    p_brute.add_argument("-b", "--bssid", help="BSSID cible (défaut : lu dans le pcap)")
+    p_brute.add_argument("--force", action="store_true",
+                         help="passer outre le garde-fou d'espace")
+    p_brute.set_defaults(func=cmd_brute)
 
     p_auto = sub.add_parser("auto", help="capture PUIS crack, affiche la clé")
     p_auto.add_argument("-o", "--output", help="conserver le .pcap (défaut : temporaire)")

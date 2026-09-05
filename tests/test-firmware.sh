@@ -95,6 +95,10 @@ python3 "$CRACK" info >/dev/null 2>&1; ck "ghost-crack info s'exécute" $?
 grep -q 'KEY FOUND' "$CRACK"; ck "récupère la clé depuis aircrack (KEY FOUND)" $?
 grep -q 'def cmd_auto' "$CRACK"; ck "commande 'auto' (capture -> crack -> clé)" $?
 python3 "$CRACK" auto --help >/dev/null 2>&1; ck "ghost-crack auto exposé" $?
+# Brute-force à la volée : génération streamée dans aircrack (aucun fichier).
+grep -q 'def cmd_brute' "$CRACK"; ck "commande 'brute' (combinaisons à la volée)" $?
+grep -q '"-w", "-"' "$CRACK"; ck "candidats poussés dans aircrack via stdin (rien sur disque)" $?
+grep -q 'itertools.product' "$CRACK"; ck "générateur paresseux (product), candidat jeté après test" $?
 # Bout-en-bout hors carte : un dump GBHS -> .pcap valide (DLT 105).
 tmp="$(mktemp -d)"
 # Deux trames « EAPOL » (données, LLC/SNAP + EtherType 0x888E) : de quoi que
@@ -114,6 +118,13 @@ magic, _, _, _, _, snap, net = struct.unpack("<IHHiIII", b[:24])
 sys.exit(0 if magic == 0xA1B2C3D4 and net == 105 and len(b) > 24 else 1)
 PY
 ck "pcap : magic + DLT 105 (IEEE802.11)" $?
+# Garde-fou brute : un espace irréaliste (alnum^8) doit être REFUSÉ (sans carte
+# ni aircrack). Le BSSID est lu du pcap qu'on vient d'écrire.
+# (die -> exit 1 : on capture la sortie AVANT de tester, sinon pipefail masque
+#  le match du grep derrière l'exit non-nul du producteur.)
+brute_out="$(python3 "$CRACK" brute "$tmp/hs.pcap" --charset alnum --min 8 --max 8 2>&1)"
+[[ $? -ne 0 ]]; ck "brute : refuse un espace irréaliste (garde-fou)" $?
+grep -q 'espace trop grand' <<<"$brute_out"; ck "brute : message d'espace trop grand" $?
 rm -rf "$tmp"
 
 echo
