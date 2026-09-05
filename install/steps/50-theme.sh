@@ -47,11 +47,20 @@ good "lanceurs installés"
 
 step "Outils GHOSTBOARD"
 for t in ghost-theme ghost-status ghost-claude ghost-browser ghost-bench \
-         ghost-perf ghost-run ghost-bruce ghost-boot-splash \
+         ghost-perf ghost-run ghost-llm ghost-llm-proxy ghost-vault ghost-bruce \
+         ghost-crack ghost-boot-splash \
          ghostboard-session; do
   install_file "$GHOSTBOARD_REPO/tools/$t" "/usr/local/bin/$t" 0755
 done
 good "outils installés dans /usr/local/bin"
+
+# Lien vers la TUI RECON (elle vit dans camera-audit/, pas dans tools/) pour
+# que ghost-run et le PATH la trouvent. Le module s'installe séparément via
+# camera-audit/install.sh (dépendances lourdes : docker, nmap, venv).
+if [[ -x "$GHOSTBOARD_REPO/camera-audit/bin/ghost-recon" ]]; then
+  run ln -sf "$GHOSTBOARD_REPO/camera-audit/bin/ghost-recon" /usr/local/bin/ghost-recon
+  good "ghost-recon relié (installer le module : camera-audit/install.sh)"
+fi
 
 # ghost-theme doit retrouver le dépôt pour régénérer le thème plus tard.
 write_file /etc/profile.d/ghostboard.sh <<PROF

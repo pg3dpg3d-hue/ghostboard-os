@@ -1,0 +1,12 @@
+# Environnement et artefacts d'exécution — reconstruits par install.sh
+.venv/
+install.log
+__pycache__/
+*.pyc
+
+# Câblage propre à l'opérateur : contient la façon dont auditkit est appelé.
+# Le modèle ghostboard_hooks.py.example est versionné, pas le fichier réel.
+ghostboard_hooks.py
+
+# Rapports générés
+*.report.html

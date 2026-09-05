@@ -6,7 +6,7 @@
 #
 # Dimensions calées sur la dalle : 620x400 sur un écran de 800x480 laisse voir
 # le bureau autour, ce qui donne le côté « flottant » plutôt que plein écran.
-favorites=ghostboard-terminal.desktop,ghostboard-claude.desktop,ghostboard-bruce.desktop,ghostboard-browser.desktop,ghostboard-settings.desktop,ghostboard-status.desktop
+favorites=ghostboard-terminal.desktop,ghostboard-claude.desktop,ghostboard-llm.desktop,ghostboard-bruce.desktop,ghostboard-recon.desktop,ghostboard-browser.desktop,ghostboard-settings.desktop,ghostboard-status.desktop
 recent=
 
 button-title=

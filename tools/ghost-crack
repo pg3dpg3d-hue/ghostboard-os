@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""
+ghost-crack — crack WPA HORS-LIGNE à partir d'un handshake capturé par la carte.
+
+La bonne méthode d'audit WPA. La carte ESP32 (module « Handshake ») capture UNE
+FOIS le handshake EAPOL et le dumpe sur le port série ; ce deck en fait un vrai
+.pcap, puis casse HORS-LIGNE avec aircrack-ng — des milliers de clés/s, sans la
+limite ~4 s/essai des tests EN LIGNE (Auth Test / Brute Force).
+
+    ghost-crack auto -o maison.pcap           capture PUIS crack, affiche la clé
+    ghost-crack capture -o maison.pcap        lit le flux série -> écrit un .pcap
+    ghost-crack capture -o x.pcap --replay f  rejoue un dump texte (tests, sans carte)
+    ghost-crack run maison.pcap               casse hors-ligne (aircrack-ng + wordlist)
+    ghost-crack run x.pcap -w rockyou.txt     avec ta propre wordlist
+    ghost-crack info                          outils détectés, cartes branchées
+
+`auto` est le chemin d'audit complet : la carte a capturé le handshake, tu
+lances `ghost-crack auto -o x.pcap` et il lit le dump série, écrit le .pcap,
+casse hors-ligne et **affiche la clé récupérée** (si elle est dans la wordlist).
+
+Options communes :
+    -d/--device /dev/ttyACM0    port série (sinon : auto via `ghost-bruce list`)
+    -b/--baud 115200            débit série
+
+Protocole série (émis par le firmware, un enregistrement par handshake) :
+    GBHS-BEGIN <bssid-hex> <canal> <ssid>
+    GBHS-PKT   <ts-microsecondes> <hexbytes>       (une par trame 802.11)
+    GBHS-END   <nombre>
+
+Le .pcap produit est au format classique (DLT 105, IEEE 802.11) : lisible tel
+quel par aircrack-ng, Wireshark, hcxtools, etc. — rien de propriétaire.
+
+⚠️  Audit de TON réseau, ou avec autorisation écrite. Même hors-ligne, un
+    dictionnaire ne révèle qu'une clé devinable : une clé forte résiste, et
+    c'est le résultat attendu d'un audit.
+
+Aucune dépendance pour `info`. `capture` utilise pyserial (sauf --replay) ;
+`run` appelle aircrack-ng. Couleurs issues de la palette du système.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import tempfile
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PALETTE_PATH = Path(os.environ.get("GHOSTBOARD_SHARE", "/usr/share/ghostboard")) / "palette.json"
+
+# DLT/LINKTYPE 105 = IEEE802_11 (trames 802.11 « nues », sans radiotap).
+LINKTYPE_IEEE802_11 = 105
+
+# Wordlist par défaut : celle embarquée dans le firmware (mêmes règles WPA),
+# surchargeable par -w. rockyou reste le classique si présent.
+DEFAULT_WORDLISTS = [
+    Path(os.environ.get("GHOSTBOARD_REPO", "")) / "companion/firmware/data/wordlist.txt",
+    Path("/usr/share/wordlists/rockyou.txt"),
+    Path("/usr/share/wordlists/fern-wifi/common.txt"),
+]
+
+
+# ---------------------------------------------------------------------------
+#  Couleurs — issues de la palette du système (repli si le dépôt n'est pas là)
+# ---------------------------------------------------------------------------
+class Ink:
+    def __init__(self) -> None:
+        self.on = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+        accent, inp, dim, text = "#A855F7", "#FF4D8D", "#6E6880", "#D6D2E0"
+        try:
+            pal = json.loads(PALETTE_PATH.read_text())["color"]
+            accent, inp, dim, text = pal["accent"], pal["input"], pal["text_dim"], pal["text"]
+        except Exception:
+            pass
+        self.accent, self.input = self._fg(accent), self._fg(inp)
+        self.dim, self.text = self._fg(dim), self._fg(text)
+        self.reset = "\033[0m" if self.on else ""
+
+    def _fg(self, hexcolor: str) -> str:
+        if not self.on:
+            return ""
+        h = hexcolor.lstrip("#")
+        return f"\033[38;2;{int(h[0:2],16)};{int(h[2:4],16)};{int(h[4:6],16)}m"
+
+    def machine(self, s): return f"{self.accent}{s}{self.reset}"
+    def user(self, s):    return f"{self.input}{s}{self.reset}"
+    def faint(self, s):   return f"{self.dim}{s}{self.reset}"
+    def body(self, s):    return f"{self.text}{s}{self.reset}"
+
+
+INK = Ink()
+
+
+def die(msg: str, code: int = 1):
+    print(INK.user(f"ghost-crack: {msg}"), file=sys.stderr)
+    sys.exit(code)
+
+
+def have(cmd: str) -> bool:
+    return shutil.which(cmd) is not None
+
+
+# ---------------------------------------------------------------------------
+#  Détection de carte — on délègue à ghost-bruce (une seule implémentation)
+# ---------------------------------------------------------------------------
+def autodetect_device() -> str | None:
+    if not have("ghost-bruce"):
+        return None
+    try:
+        raw = subprocess.run(["ghost-bruce", "list", "--json"],
+                             capture_output=True, text=True, timeout=8).stdout
+        boards = json.loads(raw) if raw.strip() else []
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
+        return None
+    return boards[0]["device"] if boards else None
+
+
+# ---------------------------------------------------------------------------
+#  Parsing du protocole GBHS-*
+# ---------------------------------------------------------------------------
+class Handshake:
+    def __init__(self, bssid="", channel=0, ssid=""):
+        self.bssid = bssid
+        self.channel = channel
+        self.ssid = ssid
+        self.packets: list[tuple[int, bytes]] = []   # (ts_microsecondes, trame)
+
+
+def parse_gbhs(lines) -> Handshake | None:
+    """Analyse un flux de lignes texte et renvoie le premier handshake complet
+    (BEGIN..END), ou None. Robuste au bruit série avant/après."""
+    hs = None
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("GBHS-BEGIN"):
+            parts = line.split(None, 3)
+            hs = Handshake(
+                bssid=parts[1] if len(parts) > 1 else "",
+                channel=int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0,
+                ssid=parts[3] if len(parts) > 3 else "",
+            )
+        elif line.startswith("GBHS-PKT") and hs is not None:
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                ts = int(parts[1])
+                data = bytes.fromhex(parts[2])
+            except ValueError:
+                continue
+            hs.packets.append((ts, data))
+        elif line.startswith("GBHS-END") and hs is not None:
+            return hs
+    return None
+
+
+# ---------------------------------------------------------------------------
+#  Écriture .pcap (DLT 105) — format classique, sans dépendance
+# ---------------------------------------------------------------------------
+def write_pcap(path: Path, hs: Handshake) -> None:
+    with open(path, "wb") as f:
+        # En-tête global : magic, v2.4, thiszone=0, sigfigs=0, snaplen, network.
+        f.write(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535,
+                            LINKTYPE_IEEE802_11))
+        base = hs.packets[0][0] if hs.packets else 0
+        for ts, data in hs.packets:
+            # Les timestamps carte sont en µs depuis le boot : on les réancre
+            # sur l'heure du deck, en gardant les écarts relatifs (l'ordre et
+            # le timing du 4-way handshake sont ce qui compte pour aircrack).
+            delta = ts - base
+            sec = int(time.time()) + delta // 1_000_000
+            usec = delta % 1_000_000
+            f.write(struct.pack("<IIII", sec, usec, len(data), len(data)))
+            f.write(data)
+
+
+# ---------------------------------------------------------------------------
+#  capture
+# ---------------------------------------------------------------------------
+def read_serial_lines(dev: str, baud: int, timeout: float):
+    try:
+        import serial  # pyserial
+    except ImportError:
+        die("pyserial est absent.\n"
+            "  sudo apt install python3-serial\n"
+            "  (ou : ghost-crack capture --replay <dump.txt> pour un test hors carte)")
+    try:
+        ser = serial.Serial(dev, baud, timeout=0.2)
+    except Exception as e:  # serial.SerialException & co.
+        die(f"port série {dev} inaccessible : {e}")
+    print(INK.faint(f"écoute {dev} à {baud} bauds — sur la carte : Handshake > "
+                    "capture > RIGHT (dump). Ctrl+C pour arrêter."))
+    deadline = time.time() + timeout if timeout else None
+    started = False
+    with ser:
+        while True:
+            if deadline and time.time() > deadline:
+                break
+            line = ser.readline().decode("utf-8", "replace")
+            if not line:
+                continue
+            if line.startswith("GBHS-BEGIN"):
+                started = True
+                print(INK.machine("  handshake détecté, lecture…"))
+            if started:
+                yield line
+            if line.startswith("GBHS-END"):
+                break
+
+
+def acquire_handshake(args) -> Handshake:
+    """Lit un handshake, depuis un dump texte (--replay) ou le port série."""
+    if args.replay:
+        src = Path(args.replay)
+        if not src.is_file():
+            die(f"fichier de rejeu introuvable : {src}")
+        lines = src.read_text(encoding="utf-8", errors="replace").splitlines()
+    else:
+        dev = args.device or autodetect_device()
+        if not dev:
+            die("aucune carte détectée. Branche-la, ou force le port : -d /dev/ttyACM0\n"
+                "  (test sans carte : --replay <dump.txt>)")
+        lines = list(read_serial_lines(dev, args.baud, args.timeout))
+
+    hs = parse_gbhs(lines)
+    if hs is None:
+        die("aucun handshake complet (GBHS-BEGIN..END) dans le flux.")
+    return hs
+
+
+def _write_and_report(hs: Handshake, out: Path) -> int:
+    eapol = sum(1 for _, d in hs.packets if _is_eapol(d))
+    if eapol < 2:
+        print(INK.user(f"attention : seulement {eapol} trame(s) EAPOL — "
+                       "handshake probablement incomplet, aircrack peut refuser."))
+    write_pcap(out, hs)
+    print(INK.machine(f"✓ {out}") + INK.body(
+        f"  ({len(hs.packets)} trames, {eapol} EAPOL, SSID « {hs.ssid or '?'} », "
+        f"BSSID {_fmt_bssid(hs.bssid)}, canal {hs.channel})"))
+    return eapol
+
+
+def cmd_capture(args) -> int:
+    hs = acquire_handshake(args)
+    out = Path(args.output)
+    _write_and_report(hs, out)
+    print(INK.faint(f"  crack : ghost-crack run {out}"))
+    return 0
+
+
+def _is_eapol(frame: bytes) -> bool:
+    """EAPOL = données (type 2) avec EtherType 0x888E après l'en-tête + LLC/SNAP."""
+    if len(frame) < 32:
+        return False
+    ftype = (frame[0] >> 2) & 0x03
+    subtype = (frame[0] >> 4) & 0x0F
+    if ftype != 2:
+        return False
+    hdr = 24 + (2 if subtype & 0x08 else 0)
+    return len(frame) >= hdr + 8 and frame[hdr + 6] == 0x88 and frame[hdr + 7] == 0x8E
+
+
+def _fmt_bssid(hexstr: str) -> str:
+    h = hexstr.strip()
+    if len(h) == 12:
+        return ":".join(h[i:i + 2] for i in range(0, 12, 2))
+    return hexstr or "?"
+
+
+# ---------------------------------------------------------------------------
+#  run  (crack hors-ligne)
+# ---------------------------------------------------------------------------
+def resolve_wordlist(explicit: str | None) -> Path:
+    if explicit:
+        p = Path(explicit)
+        if not p.is_file():
+            die(f"wordlist introuvable : {p}")
+        return p
+    for cand in DEFAULT_WORDLISTS:
+        if cand and Path(cand).is_file():
+            return Path(cand)
+    die("aucune wordlist trouvée. Fournis-en une : ghost-crack run x.pcap -w liste.txt")
+
+
+# Motif de la ligne finale d'aircrack-ng quand la clé est trouvée :
+#   KEY FOUND! [ mapassword ]
+KEY_FOUND_RE = re.compile(r"KEY FOUND!\s*\[\s*(.*?)\s*\]")
+
+
+def crack_offline(pcap: Path, wordlist: Path | None, bssid: str | None) -> str | None:
+    """Lance aircrack-ng hors-ligne, relaie sa sortie en direct, et renvoie la
+    clé si aircrack l'a trouvée (None sinon). C'est ici qu'on RÉCUPÈRE la clé."""
+    if not have("aircrack-ng"):
+        die("aircrack-ng est absent.\n  sudo apt install aircrack-ng")
+    wl = resolve_wordlist(wordlist)
+
+    # -q : sortie compacte et surtout NON interactive (sans -b, aircrack peut
+    #      sinon demander quel réseau attaquer et rester bloqué). On passe donc
+    #      le BSSID dès qu'on le connaît.
+    cmd = ["aircrack-ng", "-q", "-w", str(wl)]
+    if bssid:
+        cmd += ["-b", bssid]
+    cmd.append(str(pcap))
+
+    print(INK.machine("crack hors-ligne") + INK.body(
+        f"  pcap={pcap.name}  wordlist={wl.name}"))
+    print(INK.faint("  " + " ".join(cmd)))
+    print(INK.faint("  (aircrack-ng teste des milliers de clés/s ; une clé forte "
+                    "ne sera PAS trouvée — c'est le bon résultat d'un audit)"))
+
+    key = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            m = KEY_FOUND_RE.search(line)
+            if m:
+                key = m.group(1)
+        proc.wait()
+    except KeyboardInterrupt:
+        return None
+    return key
+
+
+def report_key(key: str | None, ssid: str = "") -> int:
+    """Affiche le résultat de l'audit : clé récupérée, ou clé résistante."""
+    tag = f" « {ssid} »" if ssid else ""
+    print()
+    if key:
+        print(INK.user("  ══════════════════════════════════════════"))
+        print(INK.user("   CLÉ RÉCUPÉRÉE — réseau FAIBLE"))
+        print(INK.machine(f"   réseau{tag}"))
+        print(INK.machine("   clé  : ") + INK.body(key))
+        print(INK.user("  ══════════════════════════════════════════"))
+        print(INK.faint("  -> change-la : elle figure dans un dictionnaire courant."))
+        return 0
+    print(INK.machine(f"  clé NON trouvée{tag}.") + INK.body(
+        "  Le réseau a résisté à cet audit."))
+    print(INK.faint("  -> essaie une wordlist plus large (-w rockyou.txt), ou la clé "
+                    "est robuste (bon signe)."))
+    return 1
+
+
+def cmd_run(args) -> int:
+    pcap = Path(args.pcap)
+    if not pcap.is_file():
+        die(f"pcap introuvable : {pcap}")
+    key = crack_offline(pcap, args.wordlist, args.bssid)
+    return report_key(key)
+
+
+def cmd_auto(args) -> int:
+    """Chaîne complète : capture le handshake, écrit le .pcap, casse, montre la clé."""
+    hs = acquire_handshake(args)
+    out = Path(args.output) if args.output else Path(tempfile.gettempdir()) / "ghost-handshake.pcap"
+    eapol = _write_and_report(hs, out)
+    if eapol < 2:
+        die("handshake incomplet : relance la capture (attends 'HANDSHAKE CAPTURED').")
+    bssid = args.bssid or (_fmt_bssid(hs.bssid) if hs.bssid else None)
+    key = crack_offline(out, args.wordlist, bssid)
+    return report_key(key, hs.ssid)
+
+
+# ---------------------------------------------------------------------------
+#  info
+# ---------------------------------------------------------------------------
+def cmd_info(args) -> int:
+    print(INK.machine("ghost-crack — outils détectés"))
+
+    def row(label, ok, extra=""):
+        mark = INK.machine("✓") if ok else INK.user("✗")
+        print(f"  {mark} {INK.body(label)}" + (INK.faint(f"  {extra}") if extra else ""))
+
+    aircrack = have("aircrack-ng")
+    row("aircrack-ng", aircrack, "" if aircrack else "sudo apt install aircrack-ng")
+    try:
+        import serial  # noqa: F401
+        pyser = True
+    except ImportError:
+        pyser = False
+    row("pyserial", pyser, "" if pyser else "sudo apt install python3-serial")
+    row("ghost-bruce (détection carte)", have("ghost-bruce"))
+
+    wl = next((c for c in DEFAULT_WORDLISTS if c and Path(c).is_file()), None)
+    row("wordlist par défaut", wl is not None, str(wl) if wl else "aucune (-w requis)")
+
+    dev = autodetect_device()
+    row("carte ESP32 branchée", dev is not None, dev or "aucune")
+
+    print(INK.faint("\n  flux : carte (module Handshake) -> ghost-crack auto -> clé"))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="ghost-crack", description="Crack WPA hors-ligne (handshake ESP32)")
+    ap.add_argument("-d", "--device", help="port série de la carte")
+    ap.add_argument("-b", "--baud", type=int, default=115200)
+    sub = ap.add_subparsers(dest="cmd")
+
+    p_cap = sub.add_parser("capture", help="lit le handshake série -> .pcap")
+    p_cap.add_argument("-o", "--output", required=True, help="fichier .pcap de sortie")
+    p_cap.add_argument("--replay", help="rejoue un dump texte au lieu du port série")
+    p_cap.add_argument("--timeout", type=float, default=0,
+                       help="secondes d'écoute max (0 = jusqu'au dump)")
+    p_cap.set_defaults(func=cmd_capture)
+
+    p_run = sub.add_parser("run", help="crack hors-ligne avec aircrack-ng")
+    p_run.add_argument("pcap", help="fichier .pcap contenant le handshake")
+    p_run.add_argument("-w", "--wordlist", help="dictionnaire (défaut : wordlist du firmware)")
+    p_run.add_argument("-b", "--bssid", help="limiter à ce BSSID (aa:bb:cc:dd:ee:ff)")
+    p_run.set_defaults(func=cmd_run)
+
+    p_auto = sub.add_parser("auto", help="capture PUIS crack, affiche la clé")
+    p_auto.add_argument("-o", "--output", help="conserver le .pcap (défaut : temporaire)")
+    p_auto.add_argument("-w", "--wordlist", help="dictionnaire (défaut : wordlist du firmware)")
+    p_auto.add_argument("-b", "--bssid", help="BSSID cible (défaut : celui du handshake)")
+    p_auto.add_argument("--replay", help="rejoue un dump texte au lieu du port série")
+    p_auto.add_argument("--timeout", type=float, default=0,
+                        help="secondes d'écoute max (0 = jusqu'au dump)")
+    p_auto.set_defaults(func=cmd_auto)
+
+    p_info = sub.add_parser("info", help="outils et carte détectés")
+    p_info.set_defaults(func=cmd_info)
+
+    args = ap.parse_args()
+    if not getattr(args, "func", None):
+        ap.print_help()
+        return 0
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

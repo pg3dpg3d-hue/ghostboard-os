@@ -206,21 +206,38 @@ Mono** everywhere else, 15 px floor.
 
 ## Architecture
 
+Reasoning runs **on the deck** — an on-device LLM (LM Studio serving Dolphin)
+is the default and works offline. Claude Code stays available for heavier,
+tool-using work when there's a network. Two brains, local first.
+
 ```
-  Cloud                          The deck (Radxa X4, N100)
-  ─────                          ─────────────────────────
-  Anthropic API  ◄──────────►   Claude Code
-   (reasoning)                    │  terminal + files
-                                  │
-                                  ▼  MCP, stdio
-                             ghostboard-computer-use
-                                  │  screenshot · click · type · key
-                                  ▼
-                             X display (:0, or :1 for a dedicated agent screen)
+  On the deck (Radxa X4, N100)                 Cloud (optional, online)
+  ────────────────────────────                 ────────────────────────
+  LM Studio · Dolphin   ◄── ghost-llm          Anthropic API
+   OpenAI API :1234/v1      (local reasoning)    ▲
+                                                 │ ghost-claude
+  Claude Code  ──────────────────────────────────┘  (agentic, when online)
+   │  terminal + files
+   ▼  MCP, stdio
+  ghostboard-computer-use
+   │  screenshot · click · type · key
+   ▼
+  X display (:0, or :1 for a dedicated agent screen)
 ```
 
-No model runs locally. The N100 does not have the power for it and does not need
-it: reasoning is remote, **control of the screen is on-device**.
+**On-device reasoning** is `ghost-llm` → LM Studio → Dolphin, over an
+OpenAI-compatible API on `127.0.0.1:1234`. It is CPU inference on the N100 —
+a few tokens per second, not cloud speed — but it needs no network and leaks
+nothing. See [docs/LOCAL-LLM.md](docs/LOCAL-LLM.md).
+
+**Control of the screen** is on-device too: the computer-use MCP server drives
+the X display for whichever brain is asking.
+
+Claude Code can also be pointed **at the local model** — `ghost-claude --local`
+runs it through `ghost-llm-proxy`, which translates the Anthropic Messages API
+to LM Studio's OpenAI API. It works, but a small local model is weak at the
+agentic loop; it's for offline chat/simple edits, not heavy agent work. See
+[docs/CLAUDE-CODE-LOCAL.md](docs/CLAUDE-CODE-LOCAL.md).
 
 ### Computer use over MCP
 
@@ -327,24 +344,22 @@ from a CDN as UMD), reframes the animation's CSS into an 800 × 480 box, and
 inlines the palette. Useful for iterating on the sequence without rebooting the
 deck, and for showing it to someone who does not have one.
 
-## Offline (degraded) mode
+## Offline mode — now with local reasoning
 
-Reasoning is in the cloud, so **without a network Claude Code cannot answer**.
-The deck says so plainly instead of failing obscurely, and stays useful:
+The deck no longer depends on the cloud to think. **`ghost-llm` runs the local
+model (LM Studio · Dolphin) with no network at all** — that is the primary
+reasoning path, and it is exactly as available offline as online.
 
-- `ghost-claude` probes the Anthropic API before launching. If it is unreachable
-  it tells you, lists what still works, and asks before continuing anyway.
-- `ghost-status` shows network, API reachability, memory, boot time, attached
-  Bruce boards.
+`ghost-claude` (the cloud, agentic path) still needs the Anthropic API, so it
+probes it before launching and, when there's no network, points you at the
+local model instead of failing blankly. There is **no background poller and no
+tray indicator** — state is computed when you ask (`ghost-status`), never by a
+daemon running for nothing.
 
-There is **no background network poller and no tray indicator**. That is
-deliberate: a daemon polling for connectivity is exactly the kind of thing that
-"runs in the background for nothing". State is computed when you ask for it.
-
-Fully usable offline: terminal, editor, file manager, `ghost-bruce` (serial
-console, board WebUI), `ghost-bench`, `ghost-status`.
-
----
+Fully usable with no network: **`ghost-llm`** (local LLM), terminal, editor,
+file manager, `ghost-bruce` (serial console, board WebUI), `ghost-perf`,
+`ghost-bench`, `ghost-status` (which shows a **Local LLM** line: `up` + model,
+or the exact reason it isn't).
 
 ## ghost-bruce
 
@@ -353,6 +368,8 @@ ghost-bruce list                 # detected boards, USB bridge, model, serial
 ghost-bruce console              # colour-coded serial console — Ctrl+] to quit
 ghost-bruce send "help"          # one command, print the reply
 ghost-bruce webui                # start the board's WebUI and open it
+ghost-bruce flash                # build + flash the GHOSTBOARD companion firmware
+ghost-bruce flash --build-only   # compile only (verify it builds)
 ghost-bruce -d /dev/ttyUSB0 info
 ```
 
@@ -374,6 +391,44 @@ bash tests/test-bruce.sh         # 12 detection checks against a fake sysfs tree
 
 ---
 
+## Companion firmware
+
+The ESP32 companion runs its own firmware, in
+[`companion/firmware/`](companion/firmware/) — a PlatformIO project with a
+two-level menu (categories → modules) on the board's OLED:
+
+- **WiFi** — Scan (passive), Deauther (DoS), Beacon Spam, Evil Portal, Sniffer,
+  Auth Test (WPA dictionary), Brute Force (on-the-fly combinations, with live
+  full-space ETA) — both for testing your own network's key strength.
+- **Bluetooth** — BLE Spam (Apple / Swift Pair / Fast Pair pairing floods).
+- **SubGHz · Infrared · NRF24 · NFC · iButton** — present in the menu but inert
+  until the matching chip (CC1101, IR LED, NRF24L01, ST25R3916, 1-Wire) is wired;
+  each shows a "Connect &lt;chip&gt;" gate. Real logic lands in phase 2.
+
+The WiFi/BLE modules are **clean-room reimplementations** inspired by the
+[ESP-HACK](https://github.com/Teapot174/ESP-HACK) firmware (AGPL-3.0) — no code
+copied, so GHOSTBOARD keeps its own licence. ESP-HACK's games are not ported.
+
+> **The active modules are authorized-use-only.** Deauther, Beacon Spam, Evil
+> Portal and BLE Spam transmit; Auth Test and Brute Force try to authenticate
+> (WPA dictionary / on-the-fly combinations against your own network's key).
+> Disrupting networks, trapping
+> third-party users, or authenticating without permission is illegal in much of
+> the world. Every active module gates its **first** action behind a shared
+> `AUTHORIZED USE ONLY` screen and a ~1.5 s long-press confirmation, re-asked on
+> every entry (`companion/firmware/src/authgate.cpp`). Scan and Sniffer stay free
+> — passive reconnaissance, no emission. This mirrors the RECON module's scope
+> barrier: authorization is an explicit, conscious step.
+
+The board's OLED is monochrome, so the palette shows through the **NeoPixel**:
+its colours are generated from `brand/palette.toml` — accent violet for
+scan/activity, input pink for emission — never hard-coded
+(`companion/firmware/tools/gen-theme.py`). Pins live in `include/config.h`
+(optional-chip pins in `include/hardware.h`) and must be checked for your board.
+Flash from the deck with `ghost-bruce flash`.
+
+---
+
 ## Layout
 
 ```
@@ -388,10 +443,16 @@ desktop/
 boot-animation/             index.html, boot.js, vendor + font fetchers
 mcp-computer-use/server.js  the MCP server (no dependencies)
 tools/                      ghost-bruce, ghost-bench, ghost-perf, ghost-run,
-                            ghost-theme,
+                            ghost-llm, ghost-llm-proxy (Anthropic->OpenAI bridge),
+                            ghost-vault (LUKS secrets), ghost-recon, ghost-theme,
                             ghost-status, ghost-claude, ghost-browser,
                             ghost-boot-splash, ghostboard-session,
                             build-boot-preview.py
+camera-audit/               RECON module — Textual TUI wrapping the auditkit
+                            camera scanner (bridge, theme, scope, report server)
+companion/firmware/         ESP32 companion firmware (PlatformIO): WiFi Scan +
+                            Deauther, palette-driven NeoPixel, flashed via
+                            `ghost-bruce flash`
 install/                    orchestrator, lib/common.sh, steps/
 tests/                      test-mcp.js, test-bruce.sh
 ```
@@ -449,9 +510,39 @@ bash tests/run-all.sh
 | `tests/test-bruce.sh` | Board detection against a synthetic sysfs tree — CP210x, CH340, native ESP32 USB, access errors |
 | `tests/test-mcp.js` | MCP handshake, tool catalogue, and `screenshot`/`click`/`type`/`key` executing against a real X server |
 | `tests/test-perf.sh` | `ghost-perf` structure and coverage, the per-process memory breakdown, and a regression lock on the process-detection false positive |
+| `tests/test-proxy.sh` | `ghost-llm-proxy` translating Anthropic Messages API ↔ OpenAI, against a mock LM Studio — non-streaming, streaming (text reconstitutes exactly), tool-call round-trip |
+| `tests/test-vault.sh` | `ghost-vault` — status, arg errors, and a real LUKS2 header write (open/mount is deck-verified) |
+| `tests/test-llm.sh` | `ghost-llm` against a mock OpenAI/LM Studio server — model listing, Dolphin auto-detect, streaming, pipe, override, dead-endpoint error |
+| `tests/test-firmware.sh` | ESP32 companion firmware — palette-derived NeoPixel colours, deauth buffer-overflow fix, every emitting module gated / sniffer passive, the hardware-absent categories showing a gate, brace balance, `ghost-bruce flash` wiring (compiles for real if PlatformIO is present) |
+| `camera-audit/tests/test_units.py` | RECON module — scope barrier, Finding normalisation, demo backend, report (no deps) |
 | `tests/test-desktop.js` | Drives the generated demo desktop in a real browser — terminal, simulated serial console, palette ranking, desktop switching, window drag/minimise/close. Skips cleanly with no browser. |
 
 `run-all.sh` also asserts that `--dry-run` leaves `/etc/fstab` untouched.
+
+## RECON · Camera Audit
+
+An optional security module lives in [`camera-audit/`](camera-audit/): a Textual
+TUI, sized for the 4-inch panel and driven entirely from the keyboard, that
+wraps the `auditkit` camera-surveillance scanner (nmap → RTSP/Cameradar → ONVIF
+→ snapshots → default creds → CVE cross-ref). It reuses `auditkit`'s findings
+and scan logic through a thin adapter, themes itself from the same palette, and
+serves its HTML report over Tailscale. It enforces the authorized-scope
+perimeter as a second barrier before any packet is sent. See
+[camera-audit/README.md](camera-audit/README.md) → *Intégration deck*.
+
+## Encryption
+
+The direct session opens without a password, so the deck carries secrets in the
+clear. Two layers, documented in [docs/ENCRYPTION.md](docs/ENCRYPTION.md):
+
+- **Full-disk encryption** — the proper protection, set up at Debian install
+  time (encrypted LVM). Can't be retrofitted by a script.
+- **`ghost-vault`** — a non-destructive LUKS2 vault for the secrets that matter
+  (Claude/API creds, LLM config, SSH keys, RECON reports), addable any time:
+  ```bash
+  sudo ghost-vault create && sudo ghost-vault open
+  ```
+  `ghost-status` shows an **Encryption** line (full disk / vault open / none).
 
 ## Recovery
 

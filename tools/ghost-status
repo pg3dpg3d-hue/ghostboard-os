@@ -41,6 +41,25 @@ esac
 command -v claude >/dev/null && row "Claude Code" "$(ok "$(claude --version 2>/dev/null | head -1)")" \
                              || row "Claude Code" "$(bad 'not installed')"
 
+# ---- LLM local (LM Studio · Dolphin) : le raisonnement embarqué du deck ----
+llm_base="${GHOSTBOARD_LLM_BASE:-http://127.0.0.1:1234/v1}"
+llm_json="$(curl -s --max-time 3 "$llm_base/models" 2>/dev/null || true)"
+if [[ -n "$llm_json" ]] && grep -q '"id"' <<<"$llm_json"; then
+  # premier modèle contenant "dolphin", sinon le premier servi
+  llm_model="$(python3 -c '
+import json,sys
+try: ids=[m["id"] for m in json.load(sys.stdin).get("data",[]) if m.get("id")]
+except Exception: ids=[]
+print(next((m for m in ids if "dolphin" in m.lower()), ids[0] if ids else ""))' <<<"$llm_json" 2>/dev/null)"
+  if [[ -n "$llm_model" ]]; then
+    row "Local LLM" "$(ok 'up') $(faint "${llm_model:0:34}")"
+  else
+    row "Local LLM" "$(bad 'no model loaded')  $(faint 'load Dolphin in LM Studio')"
+  fi
+else
+  row "Local LLM" "$(bad 'LM Studio server down')  $(faint 'ghost-llm --check')"
+fi
+
 # ---- mémoire et charge ----------------------------------------------------
 read -r _ total used free _ <<<"$(free -m | awk '/^Mem:/{print}')"
 pct=$(( used * 100 / total ))
@@ -67,6 +86,19 @@ if [[ "${boards:-0}" -gt 0 ]]; then
   row "Bruce boards" "$(ok "$boards connected")  $(faint 'ghost-bruce list')"
 else
   row "Bruce boards" "$(faint 'none connected')"
+fi
+
+# ---- chiffrement ----------------------------------------------------------
+root_src="$(findmnt -no SOURCE / 2>/dev/null)"
+if [[ "$root_src" == /dev/mapper/* ]] && command -v cryptsetup >/dev/null 2>&1 \
+   && cryptsetup status "${root_src#/dev/mapper/}" 2>/dev/null | grep -qi luks; then
+  row "Encryption" "$(ok 'full disk (LUKS)')"
+elif mountpoint -q "$HOME/.local/share/ghostboard/vault" 2>/dev/null; then
+  row "Encryption" "$(ok 'vault open')  $(faint 'secrets encrypted')"
+elif [[ -f /var/lib/ghostboard/vault.img || -n "${GHOSTBOARD_VAULT_DEV:-}" ]]; then
+  row "Encryption" "$(bad 'vault closed')  $(faint 'sudo ghost-vault open')"
+else
+  row "Encryption" "$(bad 'none')  $(faint 'sudo ghost-vault create')"
 fi
 
 # ---- écran ----------------------------------------------------------------
