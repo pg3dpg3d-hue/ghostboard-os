@@ -53,6 +53,25 @@ done
 grep -q 'gbDrawHardwareGate' "$FW/src/modules/hwstub.cpp"; ck "matériel absent -> écran 'Connect'" $?
 
 echo
+echo "firmware — wordlist embarquée (Auth Test)"
+python3 "$FW/tools/gen-wordlist.py" --check >/dev/null 2>&1
+ck "wordlist.h à jour avec data/wordlist.txt" $?
+grep -q 'GB_WORDLIST_COUNT' "$FW/include/wordlist.h" 2>/dev/null
+ck "wordlist.h expose GB_WORDLIST_COUNT" $?
+grep -q 'GB_WORDLIST' "$FW/src/modules/authtest.cpp"
+ck "authtest consomme la wordlist générée" $?
+# Toutes les entrées générées doivent respecter la plage WPA (8..63).
+python3 - "$FW/include/wordlist.h" <<'PY'
+import re, sys
+txt = open(sys.argv[1], encoding="utf-8").read()
+words = re.findall(r'^    "(.*)",$', txt, re.M)
+words = [w for w in words if w != ""]   # placeholder liste vide
+bad = [w for w in words if not (8 <= len(w) <= 63)]
+sys.exit(1 if bad else 0)
+PY
+ck "toutes les entrées dans la plage WPA 8..63" $?
+
+echo
 echo "firmware — cohérence structurelle"
 bad=0
 for f in "$FW"/src/*.cpp "$FW"/src/modules/*.cpp; do

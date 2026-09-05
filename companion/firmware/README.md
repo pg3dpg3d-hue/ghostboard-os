@@ -66,8 +66,8 @@ utilise que sur ton propre matériel, ou avec une autorisation écrite.**
 
 - **Auth Test** est un audit de robustesse : il essaie une liste de mots de passe
   contre un réseau WPA pour voir s'il cède. Sur **ton** réseau = légitime. Sur un
-  réseau tiers = accès illégal. La liste embarquée est courte (démo) ; un vrai
-  dictionnaire viendra de la carte SD en phase 2.
+  réseau tiers = accès illégal. La wordlist est **embarquée** (voir
+  [Wordlist](#wordlist-auth-test)).
 
 Chaque module actif impose un **écran de confirmation** avant la première action
 (barrière partagée, `authgate.cpp`) :
@@ -134,6 +134,37 @@ tools/gen-theme.py --check    # échoue si le header est périmé (utilisé par 
 | repos | éteinte | — |
 | scan / activité | violet | `accent` `#A855F7` |
 | émission (deauth, spam, portail) | rose | `input` `#FF4D8D` (couleur d'alerte) |
+
+## Wordlist (Auth Test)
+
+Pas de carte SD sur la carte de base : la wordlist du module **Auth Test** est
+**compilée dans le firmware**. Elle vit en clair dans un fichier texte que tu
+édites librement :
+
+```
+companion/firmware/data/wordlist.txt     # un mot de passe par ligne ; # = commentaire
+```
+
+Un générateur la transforme en tableau C (`include/wordlist.h`). Il est lancé
+**automatiquement au build** (pré-script PlatformIO), donc le flux est simplement :
+
+```sh
+# 1. mets ta liste dans data/wordlist.txt
+# 2. flashe : la liste est régénérée puis embarquée
+ghost-bruce flash
+```
+
+À la main si besoin :
+
+```sh
+tools/gen-wordlist.py            # écrit include/wordlist.h
+tools/gen-wordlist.py --check    # échoue si le header est périmé (tests)
+```
+
+Règles de génération : WPA impose des clés de **8 à 63 caractères** — les entrées
+hors plage sont écartées (impossibles comme clé WPA), les doublons supprimés,
+l'ordre conservé. La liste tient en flash (≈4 Mo) ; pour un très gros dictionnaire
+(millions d'entrées), c'est la **carte SD** qui prendra le relais en phase 2.
 
 ## Feuille de route matériel
 

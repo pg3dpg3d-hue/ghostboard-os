@@ -1,0 +1,29 @@
+# Wordlist embarquée pour le module Auth Test (audit WPA de TON réseau).
+# Un mot de passe par ligne. Les lignes vides et celles commençant par # sont
+# ignorées. WPA impose 8 à 63 caractères : les entrées hors de cette plage sont
+# écartées à la génération (elles ne peuvent pas être une clé WPA).
+#
+# Remplace le contenu par ta propre liste, puis régénère :
+#     tools/gen-wordlist.py
+# (ou flashe : le pré-build PlatformIO régénère automatiquement.)
+12345678
+123456789
+1234567890
+password
+motdepasse
+azerty123
+admin123
+00000000
+11111111
+qwertyui
+iloveyou
+freebox0
+livebox00
+sfr12345
+orange123
+internet
+changeme
+toortoor
+P@ssw0rd
+welcome1
+abcd1234

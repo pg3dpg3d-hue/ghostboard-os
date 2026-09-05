@@ -13,18 +13,13 @@
 #include "theme.h"
 #include "authgate.h"
 #include "authtest.h"
+#include "wordlist.h"   // GB_WORDLIST / GB_WORDLIST_COUNT, générés depuis data/wordlist.txt
 
 namespace AuthTest {
 
-// Dictionnaire de démonstration : les grands classiques. À remplacer par un
-// fichier sur SD en phase 2.
-static const char *WORDS[] = {
-    "12345678", "123456789", "password", "motdepasse", "azerty123",
-    "admin123", "00000000", "11111111", "qwertyui", "iloveyou",
-    "freebox0", "livebox00", "sfr12345", "orange123", "internet",
-    "changeme", "toortoor", "P@ssw0rd", "welcome1", "abcd1234",
-};
-static const int WORD_COUNT = sizeof(WORDS) / sizeof(WORDS[0]);
+// La wordlist est embarquée depuis data/wordlist.txt (voir tools/gen-wordlist.py).
+static const char *const *WORDS = GB_WORDLIST;
+static const int WORD_COUNT = GB_WORDLIST_COUNT;
 
 enum State { LIST, RUNNING, DONE };
 static State state = LIST;
