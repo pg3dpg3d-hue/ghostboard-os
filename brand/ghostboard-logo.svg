@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 200" role="img" aria-label="GHOSTBOARD OS">
+  <!--
+    GHOSTBOARD OS — logo horizontal (emblème + logotype).
+    Le texte est en Martian Mono, installée sur le deck (fetch-fonts.sh). Hors
+    du deck, repli IBM Plex Mono / monospace. Pour un logo 100 % autonome
+    (sans dépendance police), utilise brand/ghostboard-mark.svg seul.
+    Couleurs : brand/palette.toml.
+  -->
+  <defs>
+    <linearGradient id="gl-body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C68CFA"/>
+      <stop offset="1" stop-color="#A855F7"/>
+    </linearGradient>
+    <filter id="gl-glow" x="-45%" y="-45%" width="190%" height="190%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- emblème, à l'échelle 0,72 -->
+  <g transform="translate(20,28) scale(0.72)">
+    <path id="gl-ghost"
+          d="M100 22 L152 56 L158 96 L158 138 L142 172 L127 140 L112 172
+             L100 142 L88 172 L73 140 L58 172 L42 138 L42 96 L48 56 Z"/>
+    <use href="#gl-ghost" fill="#A855F7" opacity="0.55" filter="url(#gl-glow)"/>
+    <use href="#gl-ghost" fill="url(#gl-body)"/>
+    <path d="M100 30 L146 60" fill="none" stroke="#FFFFFF" stroke-width="2.5"
+          stroke-linecap="round" opacity="0.18"/>
+    <path d="M56 80 L94 98 L92 108 L56 96 Z" fill="#08070C"/>
+    <path d="M144 80 L106 98 L108 108 L144 96 Z" fill="#08070C"/>
+    <path d="M84 116 L116 116 L116 121 L110 121 L106 132 L102 121 L98 132 L94 121 L84 121 Z"
+          fill="#08070C"/>
+    <path d="M84 121 L116 121 L116 119 L84 119 Z" fill="#FF4D8D" opacity="0.9"/>
+  </g>
+
+  <!-- logotype -->
+  <text x="196" y="112" font-family="'Martian Mono','IBM Plex Mono',monospace"
+        font-size="62" font-weight="700" letter-spacing="2"
+        dominant-baseline="middle">
+    <tspan fill="#D6D2E0">GHOSTBOARD</tspan><tspan fill="#A855F7">&#160;OS</tspan>
+  </text>
+  <!-- slogan -->
+  <text x="198" y="150" font-family="'IBM Plex Mono',monospace"
+        font-size="15" font-weight="500" letter-spacing="5.5" fill="#6E6880">
+    CUSTOM HARDWARE. READY TO EXPLORE.
+  </text>
+</svg>

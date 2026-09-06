@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="GHOSTBOARD emblem">
+  <!--
+    GHOSTBOARD OS — emblème (registre agressif, esprit Bruce).
+    Spectre anguleux / crâne : front en pointe, orbites en fentes triangulaires,
+    bas de linceul déchiré en pics, gueule à crocs. Couleurs brand/palette.toml.
+    Autonome (ni police ni ressource externe) : se rasterise tel quel pour
+    l'animation. Yeux/gueule en négatif (couleur de fond #08070C) ; la marque
+    vit sur du quasi-noir. Le seul rose reste sémantique (les crocs = alerte).
+  -->
+  <defs>
+    <linearGradient id="gb-body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C68CFA"/>
+      <stop offset="0.6" stop-color="#A855F7"/>
+      <stop offset="1" stop-color="#8B3FE0"/>
+    </linearGradient>
+    <filter id="gb-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- silhouette anguleuse : front pointu, flancs droits, bas déchiré (4 pics) -->
+  <path id="gb-ghost"
+        d="M100 22 L152 56 L158 96 L158 138 L142 172 L127 140 L112 172
+           L100 142 L88 172 L73 140 L58 172 L42 138 L42 96 L48 56 Z"/>
+
+  <!-- 1. aura spectrale -->
+  <use href="#gb-ghost" fill="#A855F7" opacity="0.55" filter="url(#gb-glow)"/>
+  <!-- 2. corps -->
+  <use href="#gb-ghost" fill="url(#gb-body)"/>
+  <!-- 3. arête de front (tranchant), très discrète -->
+  <path d="M100 30 L146 60" fill="none" stroke="#FFFFFF" stroke-width="2.5"
+        stroke-linecap="round" opacity="0.18"/>
+  <!-- 4. orbites : fentes triangulaires creuses, sourcils tombants = colère -->
+  <path d="M56 80 L94 98 L92 108 L56 96 Z" fill="#08070C"/>
+  <path d="M144 80 L106 98 L108 108 L144 96 Z" fill="#08070C"/>
+  <!-- 5. gueule à crocs (négatif) + liseré rose (crocs = le seul rose) -->
+  <path d="M84 116 L116 116 L116 121 L110 121 L106 132 L102 121 L98 132 L94 121 L84 121 Z"
+        fill="#08070C"/>
+  <path d="M106 132 L102 121 L98 132 L100 124 Z" fill="#FF4D8D"/>
+  <path d="M84 121 L116 121 L116 119 L84 119 Z" fill="#FF4D8D" opacity="0.9"/>
+</svg>
