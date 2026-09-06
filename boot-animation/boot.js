@@ -293,10 +293,63 @@ function run() {
   renderer.setClearColor(new THREE.Color(COLOR.bg), 1);
   stage.appendChild(renderer.domElement);
 
-  // Caméra orthographique en unités « pixel » : le logotype tombe pile sur la
-  // grille de la dalle, sans flou de reprojection.
-  const camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -3000, 3000);
+  // Caméra PERSPECTIVE, en unités « pixel-monde » (le logotype garde ses
+  // dimensions rasterisées). fov + distance calés pour que, vue de face, la
+  // dalle cadre le mot à ~110 %. C'est le passage 2.5D -> vraie 3D : les
+  // particules ont enfin une profondeur qui se lit (parallaxe, point size
+  // atténué par la distance), et la caméra bouge dans la scène.
+  const FOV = 42;
+  const aspect = W / H;
+  // Distance frontale : visibleHeight = 2*d*tan(fov/2) doit couvrir ~1,1*H.
+  const D0 = (H * 1.10 * 0.5) / Math.tan((FOV * Math.PI / 180) / 2);
+  const camera = new THREE.PerspectiveCamera(FOV, aspect, 1, 6000);
+  camera.position.set(0, 15, D0 * 1.16);
+  camera.lookAt(0, 0, 0);
   const scene = new THREE.Scene();
+
+  // Focale en pixels pour l'atténuation du point size côté shader (near = gros,
+  // far = petit) : c'est ce qui fait « exister » la profondeur des particules.
+  const FOCAL = D0;
+
+  // ---- chorégraphie caméra --------------------------------------------------
+  //  Actes : 1 statique de face (la ligne de balayage DOM doit rester calée) ;
+  //  2 plongée traversante dans le nuage ; 3 remontée qui se pose de face au
+  //  moment où les lettres se verrouillent ; 4 léger travelling avant ;
+  //  5 recul sur l'onde de choc. Interpolation smoothstep entre images-clés.
+  const KF = [
+    { t: 0.0,                 p: [0, 15, D0 * 1.16], l: [0, 0, 0] },
+    { t: ACT.igniteEnd,       p: [0, 15, D0 * 1.08], l: [0, 0, 0] },
+    { t: (ACT.igniteEnd + ACT.seekEnd) * 0.5,
+                              p: [330, 165, 285],    l: [-55, 12, 0] },   // traversée
+    { t: ACT.lockStart,       p: [150, 72, 520],     l: [-14, 6, 0] },
+    { t: ACT.lockEnd,         p: [0, 10, D0],        l: [0, 0, 0] },      // posée de face
+    { t: ACT.settleEnd,       p: [0, 4, D0 * 0.93],  l: [0, 0, 0] },      // travelling avant
+    { t: 1.0,                 p: [0, 12, D0 * 1.14], l: [0, -6, 0] },     // recul décharge
+  ];
+  const _smooth = (a) => a * a * (3 - 2 * a);
+  const _tmpP = new THREE.Vector3();
+  const _tmpL = new THREE.Vector3();
+  function poseCamera(t, timeSec) {
+    let i = 0;
+    while (i < KF.length - 1 && t > KF[i + 1].t) i++;
+    const a = KF[i], b = KF[Math.min(i + 1, KF.length - 1)];
+    const span = Math.max(b.t - a.t, 1e-4);
+    const k = _smooth(Math.min(Math.max((t - a.t) / span, 0), 1));
+    _tmpP.set(
+      a.p[0] + (b.p[0] - a.p[0]) * k,
+      a.p[1] + (b.p[1] - a.p[1]) * k,
+      a.p[2] + (b.p[2] - a.p[2]) * k);
+    // Respiration continue, forte pendant la traversée, quasi nulle une fois posé.
+    const sway = (t > ACT.igniteEnd && t < ACT.lockEnd) ? 1 : 0.12;
+    _tmpP.x += Math.sin(timeSec * 1.3) * 7 * sway;
+    _tmpP.y += Math.cos(timeSec * 1.7) * 5 * sway;
+    camera.position.copy(_tmpP);
+    _tmpL.set(
+      a.l[0] + (b.l[0] - a.l[0]) * k,
+      a.l[1] + (b.l[1] - a.l[1]) * k,
+      a.l[2] + (b.l[2] - a.l[2]) * k);
+    camera.lookAt(_tmpL);
+  }
 
   // ---- attributs -----------------------------------------------------------
   const n = Math.min(COUNT, sample.count);
@@ -325,9 +378,14 @@ function run() {
 
     const tx = px - W / 2;
     const ty = H / 2 - py;
+    // Épaisseur : le mot n'est plus un plan mais une dalle mince. Slab ±11 u,
+    // bords poussés vers l'avant (biseau) — invisible de face (négligeable à
+    // D0), mais donne du relief pendant l'approche caméra en biais (actes 2-3).
+    const slab = (Math.random() * 2 - 1) * 11;
+    const bevel = isEdge ? 7 : 0;
     target[i * 3] = tx;
     target[i * 3 + 1] = ty;
-    target[i * 3 + 2] = 0;
+    target[i * 3 + 2] = isRule ? 0 : slab + bevel;
 
     // ACTE 1 — naissance sur la ligne de balayage : la particule apparaît à
     // SA hauteur finale, mais n'importe où en x. Le balayage « révèle » donc
@@ -401,6 +459,7 @@ function run() {
       uDischarge: { value: 0 },
       uOpacity: { value: 1 },
       uSize: { value: 3.0 },
+      uFocal: { value: FOCAL },     // atténuation perspective du point size
       uMap: { value: sprite },
       uScanY: { value: 0 },        // position de la ligne de balayage, en unités monde
       uSeekEnd: { value: ACT.seekEnd },
@@ -418,7 +477,7 @@ function run() {
       attribute float aLockStart;
       attribute float aLockDur;
 
-      uniform float uT, uTime, uGlitch, uDischarge, uSize, uScanY, uSeekEnd;
+      uniform float uT, uTime, uGlitch, uDischarge, uSize, uScanY, uSeekEnd, uFocal;
 
       varying vec3  vColor;
       varying float vLock;    // 0 en vol, 1 posée
@@ -480,13 +539,13 @@ function run() {
         vec4 mv = modelViewMatrix * vec4(pos, 1.0);
         gl_Position = projectionMatrix * mv;
 
-        // Profondeur simulée : loin = plus gros et plus diffus (bokeh pauvre),
-        // proche et posé = petit et net. C'est ce qui donne le relief.
-        float depth = 1.0 + abs(pos.z) * 0.0016;
-        // Loin = plus gros ET plus faible : c'est ce couple qui fait la
-        // profondeur de champ. La taille seule ne donne qu'un aplat plus épais.
-        vDepthFade = 1.0 - clamp(abs(pos.z) / 1500.0, 0.0, 0.78);
-        gl_PointSize = uSize * (1.0 + rest * 1.2) * depth * vAlive;
+        // Point size PERSPECTIF : atténué par la distance réelle à la caméra
+        // (uFocal / -mv.z). En vol une particule reste plus grosse (rest) et
+        // diffuse ; posée, elle est petite et nette. C'est le vrai relief.
+        float distFactor = uFocal / max(-mv.z, 1.0);
+        // Profondeur de champ pauvre : loin (dans le nuage) = plus faible.
+        vDepthFade = 1.0 - clamp((-mv.z - uFocal) / 2200.0, 0.0, 0.72);
+        gl_PointSize = uSize * (1.0 + rest * 1.4) * distFactor * vAlive;
       }
     `,
     fragmentShader: `
@@ -522,12 +581,22 @@ function run() {
   const points = new THREE.Points(geometry, material);
   scene.add(points);
 
+  // ---- grille en perspective (sol) -----------------------------------------
+  //  Un plan de lignes sous le logotype, qui fuit vers l'horizon. C'est le
+  //  repère de profondeur le plus fort de la scène : sans lui la 3D des
+  //  particules seules se lit mal. Il remplace, en volume, le simple filet
+  //  d'accent 2D. Additif, fin, révélé du proche au lointain à l'acte 4.
+  const grid = makeGrid(sample.fontSize);
+  scene.add(grid.mesh);
+
   function dispose() {
     renderer.setAnimationLoop(null);
     geometry.dispose();
     material.dispose();
     sprite.dispose();
     scene.remove(points);
+    scene.remove(grid.mesh);
+    grid.dispose();
     scene.clear();
     renderer.dispose();
     // Destruction explicite du contexte : sans ça le pilote garde le GPU
@@ -597,6 +666,20 @@ function run() {
       tagline.style.opacity = String(1 - p);
     }
 
+    // La caméra parcourt sa trajectoire (traversée -> arrivée de face -> recul).
+    poseCamera(t, ms / 1000);
+
+    // Grille en perspective : se déploie du proche vers le lointain à l'acte 4,
+    // s'efface avec l'onde de choc à l'acte 5.
+    if (t >= ACT.settleStart) {
+      const gp = Math.min((t - ACT.settleStart) / ((ACT.settleEnd - ACT.settleStart) * 0.85), 1);
+      grid.uniforms.uReveal.value = gp;
+    } else {
+      grid.uniforms.uReveal.value = 0;
+    }
+    grid.uniforms.uOp.value = material.uniforms.uOpacity.value;
+    grid.uniforms.uTime.value = ms / 1000;
+
     renderer.render(scene, camera);
 
     if (ms >= TOTAL) {
@@ -631,6 +714,86 @@ function makeSpriteTexture() {
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
   return tex;
+}
+
+/** Grille en perspective (sol synthwave) sous le logotype. Lignes additives
+ *  fines qui fuient vers l'horizon ; révélées du proche au lointain (uReveal),
+ *  fondues à la décharge (uOp). C'est le repère de profondeur de la scène. */
+function makeGrid(fontSize) {
+  const GROUND_Y = -(fontSize * 1.15);
+  const GW = 560;                 // demi-largeur
+  const NEAR_Z = 140;             // vers la caméra
+  const FAR_Z = -1200;            // vers l'horizon
+  const NX = 22;                  // lignes fuyantes (constante en x)
+  const NZ = 22;                  // lignes transversales (constante en z)
+
+  const verts = [];
+  const fades = [];
+  const fadeOf = (z) => (NEAR_Z - z) / (NEAR_Z - FAR_Z);   // 0 proche .. 1 loin
+
+  // Lignes transversales (le long de X, à z constant).
+  for (let i = 0; i < NZ; i++) {
+    // Espacement non linéaire : plus serré au loin, comme une vraie fuite.
+    const f = i / (NZ - 1);
+    const z = NEAR_Z + (FAR_Z - NEAR_Z) * Math.pow(f, 0.72);
+    verts.push(-GW, GROUND_Y, z, GW, GROUND_Y, z);
+    const fd = fadeOf(z);
+    fades.push(fd, fd);
+  }
+  // Lignes fuyantes (le long de Z, à x constant).
+  for (let i = 0; i < NX; i++) {
+    const x = -GW + (2 * GW) * (i / (NX - 1));
+    verts.push(x, GROUND_Y, NEAR_Z, x, GROUND_Y, FAR_Z);
+    fades.push(fadeOf(NEAR_Z), fadeOf(FAR_Z));
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+  g.setAttribute('aFade', new THREE.BufferAttribute(new Float32Array(fades), 1));
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(COLOR.accent) },
+      uReveal: { value: 0 },
+      uOp: { value: 1 },
+      uTime: { value: 0 },
+    },
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      attribute float aFade;
+      varying float vFade;
+      void main() {
+        vFade = aFade;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision mediump float;
+      uniform vec3 uColor; uniform float uReveal, uOp, uTime;
+      varying float vFade;
+      void main() {
+        // Révélation proche -> lointain : dessiné là où vFade < uReveal.
+        float vis = smoothstep(uReveal + 0.05, uReveal - 0.03, vFade);
+        float near = 1.0 - vFade;                 // proche = plus vif
+        // Pouls lent qui court vers l'horizon, très discret.
+        float pulse = 0.85 + 0.15 * sin(vFade * 22.0 - uTime * 3.0);
+        float a = near * near * 0.9 * vis * uOp * pulse;
+        if (a < 0.012) discard;
+        gl_FragColor = vec4(uColor * (0.45 + 0.55 * near), a);
+      }
+    `,
+  });
+
+  const mesh = new THREE.LineSegments(g, mat);
+  mesh.renderOrder = -1;          // derrière les particules
+  return {
+    mesh,
+    uniforms: mat.uniforms,
+    dispose() { g.dispose(); mat.dispose(); },
+  };
 }
 
 // ---------------------------------------------------------------------------
