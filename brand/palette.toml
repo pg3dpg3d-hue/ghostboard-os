@@ -16,7 +16,7 @@
 [meta]
 name        = "GHOSTBOARD"
 os_name     = "GHOSTBOARD OS"
-slogan      = "CUSTOM HARDWARE. READY TO EXPLORE."
+slogan      = "PHANTOM FIRMWARE"
 theme_id    = "GhostboardSpectral"   # nom du thème GTK / xfwm4 généré
 
 # ----------------------------------------------------------------------------

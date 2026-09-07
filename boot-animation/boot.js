@@ -86,7 +86,7 @@ const ACT = {
 
 const COUNT = BOOT.particle_count ?? 20000;
 const WORDMARK = META.name || 'GHOSTBOARD';
-const SLOGAN = META.slogan || 'CUSTOM HARDWARE. READY TO EXPLORE.';
+const SLOGAN = META.slogan || 'PHANTOM FIRMWARE';
 const DISPLAY_FONT = FONT.display || 'Martian Mono';
 const UI_FONT = FONT.ui || 'IBM Plex Mono';
 
@@ -137,6 +137,48 @@ function reducedMotion() {
 //  à laquelle il appartient (verrouillage lettre par lettre) et s'il est sur
 //  un BORD de glyphe (aberration chromatique des contours).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  Échantillonnage de la MASCOTTE (logo.png détouré).
+//  Pour chaque pixel opaque : sa position finale (dans le cadre exact où la
+//  version nette se révélera) + sa COULEUR (le nuage prend les teintes du logo)
+//  + s'il est sur un bord (léger relief). Le fond détouré est transparent, donc
+//  on filtre sur l'alpha — plus de logotype à rasteriser.
+// ---------------------------------------------------------------------------
+function sampleLogo(img, W, H) {
+  const logoH = H * 0.74;
+  const logoW = logoH * (img.width / img.height);
+  const ox = W / 2 - logoW / 2;
+  const oyTop = H / 2 - logoH / 2;           // centré (vertical et horizontal)
+
+  const sh = 300;
+  const sw = Math.max(1, Math.round(img.width * (sh / img.height)));
+  const cv = document.createElement('canvas');
+  cv.width = sw; cv.height = sh;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.clearRect(0, 0, sw, sh);
+  ctx.drawImage(img, 0, 0, sw, sh);
+  const d = ctx.getImageData(0, 0, sw, sh).data;
+  const alphaAt = (x, y) =>
+    (x < 0 || y < 0 || x >= sw || y >= sh) ? 0 : d[(y * sw + x) * 4 + 3];
+
+  const px = [], py = [], rr = [], gg = [], bb = [], ed = [];
+  const step = 2;
+  for (let y = 0; y < sh; y += step) {
+    for (let x = 0; x < sw; x += step) {
+      const i = (y * sw + x) * 4;
+      if (d[i + 3] < 70) continue;                 // fond détouré = transparent
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      if (r + g + b < 24) continue;                // noir pur = invisible en additif
+      const edge = (alphaAt(x - step, y) < 70 || alphaAt(x + step, y) < 70
+                 || alphaAt(x, y - step) < 70 || alphaAt(x, y + step) < 70) ? 1 : 0;
+      px.push(ox + (x / sw) * logoW);
+      py.push(oyTop + (y / sh) * logoH);
+      rr.push(r); gg.push(g); bb.push(b); ed.push(edge);
+    }
+  }
+  return { px, py, rr, gg, bb, ed, count: px.length, ox, oyTop, logoW, logoH };
+}
+
 function sampleWordmark(width, height) {
   const cv = document.createElement('canvas');
   cv.width = width;
@@ -235,7 +277,7 @@ function setupOverlays(W, H) {
   }
 
   tagline.style.color = COLOR.dim;
-  tagline.style.bottom = Math.round(H * 0.24) + 'px';
+  tagline.style.bottom = Math.round(H * 0.06) + 'px';   // sous la mascotte
   tagline.textContent = '';
 }
 
@@ -256,28 +298,60 @@ function typeTagline(progress) {
 let activeDispose = null;
 
 function boot() {
-  if (reducedMotion()) {
+  // La mascotte pilote toute l'animation : on charge d'abord logo.png, puis on
+  // lance. Sans elle (fichier absent) ou en reduced-motion, repli statique.
+  const img = new Image();
+  img.onload = () => {
+    if (reducedMotion()) {
+      drawLogoStatic(img);
+      setTimeout(() => finish(null), Math.min(600, TOTAL));
+      return;
+    }
+    try {
+      activeDispose = run(img);
+    } catch (err) {
+      console.error('[ghostboard-boot] rendu impossible :', err);
+      paintStaticFallback();
+      setTimeout(() => finish(null), Math.min(600, TOTAL));
+    }
+  };
+  img.onerror = () => {
+    console.warn('[ghostboard-boot] logo.png introuvable, repli statique');
     paintStaticFallback();
     setTimeout(() => finish(null), Math.min(600, TOTAL));
-    return;
-  }
-  try {
-    activeDispose = run();
-  } catch (err) {
-    console.error('[ghostboard-boot] rendu impossible :', err);
-    paintStaticFallback();
-    setTimeout(() => finish(null), Math.min(600, TOTAL));
-  }
+  };
+  img.src = 'logo.png';
 }
 
-function run() {
+/** Repli statique « riche » : la mascotte nette centrée (reduced-motion). */
+function drawLogoStatic(img) {
+  const W = LAYOUT.screen_w || window.innerWidth || 800;
+  const H = LAYOUT.screen_h || window.innerHeight || 480;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  c.style.width = '100%'; c.style.height = '100%';
+  const g = c.getContext('2d');
+  g.fillStyle = COLOR.bg; g.fillRect(0, 0, W, H);
+  const lh = H * 0.74, lw = lh * (img.width / img.height);
+  g.drawImage(img, (W - lw) / 2, (H - lh) / 2, lw, lh);
+  stage.appendChild(c);
+  document.body.style.background = COLOR.bg;
+  tagline.textContent = SLOGAN;
+  tagline.style.color = COLOR.dim;
+  tagline.style.bottom = Math.round(H * 0.08) + 'px';
+  tagline.classList.add('on');
+}
+
+function run(img) {
   const W = LAYOUT.screen_w || window.innerWidth || 800;
   const H = LAYOUT.screen_h || window.innerHeight || 480;
 
-  const sample = sampleWordmark(W, H);
-  if (sample.count < 200) throw new Error('logotype non rasterisable');
-  console.log(`[ghostboard-boot] logotype : ${sample.count} px échantillonnés, `
-    + `police ${sample.fontSize}px, ${sample.letterCount} lettres`);
+  // Les particules sont désormais échantillonnées sur la MASCOTTE (logo.png)
+  // et non plus sur le mot : elles reconstituent le logo lui-même, à l'endroit
+  // exact où la version nette se révélera ensuite. Plus d'ancien logotype.
+  const sample = sampleLogo(img, W, H);
+  if (sample.count < 200) throw new Error('logo non échantillonnable');
+  console.log(`[ghostboard-boot] mascotte : ${sample.count} px échantillonnés`);
 
   setupOverlays(W, H);
 
@@ -363,80 +437,48 @@ function run() {
   const lockStart = new Float32Array(n);
   const lockDur = new Float32Array(n);
 
-  const cAccent = new THREE.Color(COLOR.accent);
-  const cInput = new THREE.Color(COLOR.input);
-  const cText = new THREE.Color(COLOR.text);
-  const cEdge = new THREE.Color(COLOR.accent).lerp(new THREE.Color(COLOR.input), 0.40);
+  const span = ACT.lockEnd - ACT.lockStart;
+  const oyTop = sample.oyTop, logoH = sample.logoH;
 
   for (let i = 0; i < n; i++) {
-    const src = Math.floor(i * stride) * 4;
-    const px = sample.pts[src];
-    const py = sample.pts[src + 1];
-    const letter = sample.pts[src + 2];
-    const isEdge = sample.pts[src + 3] === 1;
-    const isRule = letter < 0;
+    const idx = Math.floor(i * stride);
+    const px = sample.px[idx], py = sample.py[idx];
+    const isEdge = sample.ed[idx] === 1;
+    const yN = (py - oyTop) / logoH;          // 0 haut .. 1 bas (mitre -> base)
 
     const tx = px - W / 2;
     const ty = H / 2 - py;
-    // Épaisseur : le mot n'est plus un plan mais une dalle mince. Slab ±11 u,
-    // bords poussés vers l'avant (biseau) — invisible de face (négligeable à
-    // D0), mais donne du relief pendant l'approche caméra en biais (actes 2-3).
-    const slab = (Math.random() * 2 - 1) * 11;
-    const bevel = isEdge ? 7 : 0;
+    // Léger slab d'épaisseur : donne du relief à la mascotte pendant l'approche
+    // caméra en biais (actes 2-3) ; bords poussés vers l'avant.
+    const slab = (Math.random() * 2 - 1) * 8;
     target[i * 3] = tx;
     target[i * 3 + 1] = ty;
-    target[i * 3 + 2] = isRule ? 0 : slab + bevel;
+    target[i * 3 + 2] = slab + (isEdge ? 5 : 0);
 
-    // ACTE 1 — naissance sur la ligne de balayage : la particule apparaît à
-    // SA hauteur finale, mais n'importe où en x. Le balayage « révèle » donc
-    // la bande horizontale où elle vit avant qu'elle ne trouve sa colonne.
+    // ACTE 1 — naissance révélée par la ligne de balayage (hauteur finale, x libre).
     birthPos[i * 3] = (Math.random() - 0.5) * W * 1.15;
     birthPos[i * 3 + 1] = ty + (Math.random() - 0.5) * 5;
     birthPos[i * 3 + 2] = (Math.random() - 0.5) * 90;
 
-    // ACTE 2 — ancre de dérive : un nuage large et profond vers lequel la
-    // particule s'éloigne avant d'être rappelée.
+    // ACTE 2 — nébuleuse de dérive : coeur dense, profondeur creusée.
     const ang = Math.random() * Math.PI * 2;
-    // pow(r, 0.6) concentre vers le centre : une nébuleuse a un coeur, une
-    // distribution uniforme n'en a pas et ressemble à du bruit.
-    const rad = 130 + Math.pow(Math.random(), 0.6) * 360;
-    scatter[i * 3] = Math.cos(ang) * rad * 0.95;
-    scatter[i * 3 + 1] = Math.sin(ang) * rad * 0.42;   // aplati, comme le mot
-    scatter[i * 3 + 2] = (Math.random() - 0.5) * 1900; // profondeur creusée
+    const rad = 130 + Math.pow(Math.random(), 0.6) * 380;
+    scatter[i * 3] = Math.cos(ang) * rad * 0.9;
+    scatter[i * 3 + 1] = Math.sin(ang) * rad * 0.7;
+    scatter[i * 3 + 2] = (Math.random() - 0.5) * 1900;
 
     seed[i] = Math.random() * 6.2831;
-    // Naissance étalée sur l'acte 1. 40 % de l'ordre vient de la hauteur
-    // finale (le balayage garde son sens de lecture haut -> bas), 60 % est
-    // aléatoire : sans ça la ligne traverse 480 px en n'émettant que sur la
-    // bande de 100 px qu'occupe le logotype, et les 3/4 du balayage sont vides.
-    birth[i] = (0.4 * (py / H) + 0.6 * Math.random()) * ACT.igniteEnd;
+    // naissance étalée sur l'acte 1, ordonnée haut -> bas
+    birth[i] = (0.45 * yN + 0.55 * Math.random()) * ACT.igniteEnd;
 
-    if (isRule) {
-      // ACTE 4 — le filet se trace de gauche à droite.
-      const xNorm = (px - sample.ruleX) / Math.max(sample.ruleW, 1);
-      lockStart[i] = ACT.settleStart + xNorm * (ACT.settleEnd - ACT.settleStart) * 0.55;
-      lockDur[i] = (ACT.settleEnd - ACT.settleStart) * 0.35;
-    } else {
-      // ACTE 3 — une lettre après l'autre. L'étalement occupe 60 % de l'acte,
-      // le reste laisse à la dernière lettre le temps de se poser.
-      const span = ACT.lockEnd - ACT.lockStart;
-      lockStart[i] = ACT.lockStart
-        + (letter / Math.max(sample.letterCount, 1)) * span * 0.6
-        + Math.random() * span * 0.05;
-      lockDur[i] = span * 0.4;
-    }
+    // ACTE 3 — assemblage de la mascotte, haut -> bas (la mitre se pose d'abord).
+    lockStart[i] = ACT.lockStart + yN * span * 0.55 + Math.random() * span * 0.06;
+    lockDur[i] = span * 0.42;
 
-    // Une seule couleur d'accent domine. Les bords virent vers le rose : c'est
-    // une aberration chromatique, pas une seconde couleur de marque.
-    let col = cAccent;
-    const r = Math.random();
-    if (isRule) col = cAccent;
-    else if (isEdge && r < 0.45) col = cEdge;
-    else if (r < 0.04) col = cInput;
-    else if (r < 0.13) col = cText;
-    colors[i * 3] = col.r;
-    colors[i * 3 + 1] = col.g;
-    colors[i * 3 + 2] = col.b;
+    // couleurs : celles du logo lui-même (léger gain pour l'additif).
+    colors[i * 3]     = Math.min(1, (sample.rr[idx] / 255) * 1.12);
+    colors[i * 3 + 1] = Math.min(1, (sample.gg[idx] / 255) * 1.12);
+    colors[i * 3 + 2] = Math.min(1, (sample.bb[idx] / 255) * 1.12);
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -586,32 +628,31 @@ function run() {
   //  repère de profondeur le plus fort de la scène : sans lui la 3D des
   //  particules seules se lit mal. Il remplace, en volume, le simple filet
   //  d'accent 2D. Additif, fin, révélé du proche au lointain à l'acte 4.
-  const grid = makeGrid(sample.fontSize);
+  const grid = makeGrid(H * 0.36);
   scene.add(grid.mesh);
 
-  // ---- mascotte (logo détouré) ---------------------------------------------
-  //  Le logotype-particules forme le MOT ; à l'assise, la vraie mascotte
-  //  GHOSTBOARD (PNG transparent, logo.png) se révèle par-dessus et le mot
-  //  s'efface derrière elle. Chargement asynchrone : si le fichier manque, le
-  //  boot continue sans mascotte (jamais bloquant). Plan face caméra, alpha
-  //  normal (couleurs vraies), rendu après les particules.
+  // ---- mascotte nette (logo détouré) ---------------------------------------
+  //  Les particules RECONSTITUENT la mascotte ; à l'assise, sa version NETTE se
+  //  révèle par-dessus, exactement au même cadrage, et les particules s'effacent
+  //  derrière elle. La texture vient de l'image DÉJÀ chargée (pas de 2e requête).
+  //  Plan face caméra, alpha normal (couleurs vraies), rendu après les particules.
   const logo = { ready: false, mesh: null, mat: null, tex: null };
-  new THREE.TextureLoader().load('logo.png', (tex) => {
-    if (finished) { tex.dispose(); return; }
+  {
+    const tex = new THREE.Texture(img);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.minFilter = THREE.LinearFilter;
     tex.generateMipmaps = false;
-    const iw = tex.image.width, ih = tex.image.height;
-    const ph = H * 0.82, pw = ph * (iw / ih);
+    tex.needsUpdate = true;
+    const ph = H * 0.74, pw = ph * (img.width / img.height);
     const mat = new THREE.MeshBasicMaterial({
       map: tex, transparent: true, opacity: 0, depthTest: false, depthWrite: false,
     });
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), mat);
-    mesh.position.set(0, H * 0.02, 0);
+    mesh.position.set(0, 0, 0);           // centré (même cadrage que les particules)
     mesh.renderOrder = 2;                 // par-dessus particules (0) et grille (-1)
     scene.add(mesh);
     logo.mesh = mesh; logo.mat = mat; logo.tex = tex; logo.ready = true;
-  }, undefined, () => { /* logo.png absent : boot sans mascotte */ });
+  }
 
   function dispose() {
     renderer.setAnimationLoop(null);
