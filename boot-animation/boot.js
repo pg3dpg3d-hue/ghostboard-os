@@ -589,6 +589,30 @@ function run() {
   const grid = makeGrid(sample.fontSize);
   scene.add(grid.mesh);
 
+  // ---- mascotte (logo détouré) ---------------------------------------------
+  //  Le logotype-particules forme le MOT ; à l'assise, la vraie mascotte
+  //  GHOSTBOARD (PNG transparent, logo.png) se révèle par-dessus et le mot
+  //  s'efface derrière elle. Chargement asynchrone : si le fichier manque, le
+  //  boot continue sans mascotte (jamais bloquant). Plan face caméra, alpha
+  //  normal (couleurs vraies), rendu après les particules.
+  const logo = { ready: false, mesh: null, mat: null, tex: null };
+  new THREE.TextureLoader().load('logo.png', (tex) => {
+    if (finished) { tex.dispose(); return; }
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    const iw = tex.image.width, ih = tex.image.height;
+    const ph = H * 0.82, pw = ph * (iw / ih);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0, depthTest: false, depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), mat);
+    mesh.position.set(0, H * 0.02, 0);
+    mesh.renderOrder = 2;                 // par-dessus particules (0) et grille (-1)
+    scene.add(mesh);
+    logo.mesh = mesh; logo.mat = mat; logo.tex = tex; logo.ready = true;
+  }, undefined, () => { /* logo.png absent : boot sans mascotte */ });
+
   function dispose() {
     renderer.setAnimationLoop(null);
     geometry.dispose();
@@ -597,6 +621,12 @@ function run() {
     scene.remove(points);
     scene.remove(grid.mesh);
     grid.dispose();
+    if (logo.mesh) {
+      scene.remove(logo.mesh);
+      logo.mesh.geometry.dispose();
+      logo.mat.dispose();
+      logo.tex.dispose();
+    }
     scene.clear();
     renderer.dispose();
     // Destruction explicite du contexte : sans ça le pilote garde le GPU
@@ -658,26 +688,38 @@ function run() {
       typeTagline(p);
     }
 
-    // ACTE 5 — décharge et extinction.
+    // ACTE 4 — la MASCOTTE se révèle par-dessus ; le logotype-particules
+    // s'efface pour ne pas dépasser derrière elle (easeOutExpo).
+    if (t >= ACT.settleStart) {
+      const sp = Math.min((t - ACT.settleStart) / ((ACT.settleEnd - ACT.settleStart) * 0.8), 1);
+      const e = sp >= 1 ? 1 : 1 - Math.pow(2, -10 * sp);
+      if (logo.ready) { logo.mat.opacity = e; logo.mesh.scale.setScalar(1 + (1 - e) * 0.05); }
+      material.uniforms.uOpacity.value = 1 - 0.85 * e;   // le mot recule derrière la mascotte
+    }
+
+    // ACTE 5 — décharge et extinction (mot, mascotte, grille).
+    let gridOp = 1;
     if (t >= ACT.dischargeStart) {
       const p = Math.min((t - ACT.dischargeStart) / (1 - ACT.dischargeStart), 1);
       material.uniforms.uDischarge.value = p * p;
-      material.uniforms.uOpacity.value = 1 - p;
+      material.uniforms.uOpacity.value *= (1 - p);
+      if (logo.ready) logo.mat.opacity *= (1 - p);
       tagline.style.opacity = String(1 - p);
+      gridOp = 1 - p;
     }
 
     // La caméra parcourt sa trajectoire (traversée -> arrivée de face -> recul).
     poseCamera(t, ms / 1000);
 
-    // Grille en perspective : se déploie du proche vers le lointain à l'acte 4,
-    // s'efface avec l'onde de choc à l'acte 5.
+    // Grille en perspective : déployée à l'acte 4, éteinte à l'acte 5. Son
+    // opacité est découplée du mot (qui, lui, s'efface dès l'assise).
     if (t >= ACT.settleStart) {
       const gp = Math.min((t - ACT.settleStart) / ((ACT.settleEnd - ACT.settleStart) * 0.85), 1);
       grid.uniforms.uReveal.value = gp;
     } else {
       grid.uniforms.uReveal.value = 0;
     }
-    grid.uniforms.uOp.value = material.uniforms.uOpacity.value;
+    grid.uniforms.uOp.value = gridOp;
     grid.uniforms.uTime.value = ms / 1000;
 
     renderer.render(scene, camera);
