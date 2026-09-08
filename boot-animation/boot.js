@@ -86,7 +86,7 @@ const ACT = {
 
 const COUNT = BOOT.particle_count ?? 20000;
 const WORDMARK = META.name || 'GHOSTBOARD';
-const SLOGAN = META.slogan || 'CUSTOM HARDWARE. READY TO EXPLORE.';
+const SLOGAN = META.slogan || 'PHANTOM FIRMWARE';
 const DISPLAY_FONT = FONT.display || 'Martian Mono';
 const UI_FONT = FONT.ui || 'IBM Plex Mono';
 
@@ -137,6 +137,48 @@ function reducedMotion() {
 //  à laquelle il appartient (verrouillage lettre par lettre) et s'il est sur
 //  un BORD de glyphe (aberration chromatique des contours).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  Échantillonnage de la MASCOTTE (logo.png détouré).
+//  Pour chaque pixel opaque : sa position finale (dans le cadre exact où la
+//  version nette se révélera) + sa COULEUR (le nuage prend les teintes du logo)
+//  + s'il est sur un bord (léger relief). Le fond détouré est transparent, donc
+//  on filtre sur l'alpha — plus de logotype à rasteriser.
+// ---------------------------------------------------------------------------
+function sampleLogo(img, W, H) {
+  const logoH = H * 0.74;
+  const logoW = logoH * (img.width / img.height);
+  const ox = W / 2 - logoW / 2;
+  const oyTop = H / 2 - logoH / 2;           // centré (vertical et horizontal)
+
+  const sh = 300;
+  const sw = Math.max(1, Math.round(img.width * (sh / img.height)));
+  const cv = document.createElement('canvas');
+  cv.width = sw; cv.height = sh;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.clearRect(0, 0, sw, sh);
+  ctx.drawImage(img, 0, 0, sw, sh);
+  const d = ctx.getImageData(0, 0, sw, sh).data;
+  const alphaAt = (x, y) =>
+    (x < 0 || y < 0 || x >= sw || y >= sh) ? 0 : d[(y * sw + x) * 4 + 3];
+
+  const px = [], py = [], rr = [], gg = [], bb = [], ed = [];
+  const step = 2;
+  for (let y = 0; y < sh; y += step) {
+    for (let x = 0; x < sw; x += step) {
+      const i = (y * sw + x) * 4;
+      if (d[i + 3] < 70) continue;                 // fond détouré = transparent
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      if (r + g + b < 24) continue;                // noir pur = invisible en additif
+      const edge = (alphaAt(x - step, y) < 70 || alphaAt(x + step, y) < 70
+                 || alphaAt(x, y - step) < 70 || alphaAt(x, y + step) < 70) ? 1 : 0;
+      px.push(ox + (x / sw) * logoW);
+      py.push(oyTop + (y / sh) * logoH);
+      rr.push(r); gg.push(g); bb.push(b); ed.push(edge);
+    }
+  }
+  return { px, py, rr, gg, bb, ed, count: px.length, ox, oyTop, logoW, logoH };
+}
+
 function sampleWordmark(width, height) {
   const cv = document.createElement('canvas');
   cv.width = width;
@@ -235,7 +277,7 @@ function setupOverlays(W, H) {
   }
 
   tagline.style.color = COLOR.dim;
-  tagline.style.bottom = Math.round(H * 0.24) + 'px';
+  tagline.style.bottom = Math.round(H * 0.06) + 'px';   // sous la mascotte
   tagline.textContent = '';
 }
 
@@ -256,28 +298,60 @@ function typeTagline(progress) {
 let activeDispose = null;
 
 function boot() {
-  if (reducedMotion()) {
+  // La mascotte pilote toute l'animation : on charge d'abord logo.png, puis on
+  // lance. Sans elle (fichier absent) ou en reduced-motion, repli statique.
+  const img = new Image();
+  img.onload = () => {
+    if (reducedMotion()) {
+      drawLogoStatic(img);
+      setTimeout(() => finish(null), Math.min(600, TOTAL));
+      return;
+    }
+    try {
+      activeDispose = run(img);
+    } catch (err) {
+      console.error('[ghostboard-boot] rendu impossible :', err);
+      paintStaticFallback();
+      setTimeout(() => finish(null), Math.min(600, TOTAL));
+    }
+  };
+  img.onerror = () => {
+    console.warn('[ghostboard-boot] logo.png introuvable, repli statique');
     paintStaticFallback();
     setTimeout(() => finish(null), Math.min(600, TOTAL));
-    return;
-  }
-  try {
-    activeDispose = run();
-  } catch (err) {
-    console.error('[ghostboard-boot] rendu impossible :', err);
-    paintStaticFallback();
-    setTimeout(() => finish(null), Math.min(600, TOTAL));
-  }
+  };
+  img.src = 'logo.png';
 }
 
-function run() {
+/** Repli statique « riche » : la mascotte nette centrée (reduced-motion). */
+function drawLogoStatic(img) {
+  const W = LAYOUT.screen_w || window.innerWidth || 800;
+  const H = LAYOUT.screen_h || window.innerHeight || 480;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  c.style.width = '100%'; c.style.height = '100%';
+  const g = c.getContext('2d');
+  g.fillStyle = COLOR.bg; g.fillRect(0, 0, W, H);
+  const lh = H * 0.74, lw = lh * (img.width / img.height);
+  g.drawImage(img, (W - lw) / 2, (H - lh) / 2, lw, lh);
+  stage.appendChild(c);
+  document.body.style.background = COLOR.bg;
+  tagline.textContent = SLOGAN;
+  tagline.style.color = COLOR.dim;
+  tagline.style.bottom = Math.round(H * 0.08) + 'px';
+  tagline.classList.add('on');
+}
+
+function run(img) {
   const W = LAYOUT.screen_w || window.innerWidth || 800;
   const H = LAYOUT.screen_h || window.innerHeight || 480;
 
-  const sample = sampleWordmark(W, H);
-  if (sample.count < 200) throw new Error('logotype non rasterisable');
-  console.log(`[ghostboard-boot] logotype : ${sample.count} px échantillonnés, `
-    + `police ${sample.fontSize}px, ${sample.letterCount} lettres`);
+  // Les particules sont désormais échantillonnées sur la MASCOTTE (logo.png)
+  // et non plus sur le mot : elles reconstituent le logo lui-même, à l'endroit
+  // exact où la version nette se révélera ensuite. Plus d'ancien logotype.
+  const sample = sampleLogo(img, W, H);
+  if (sample.count < 200) throw new Error('logo non échantillonnable');
+  console.log(`[ghostboard-boot] mascotte : ${sample.count} px échantillonnés`);
 
   setupOverlays(W, H);
 
@@ -293,10 +367,63 @@ function run() {
   renderer.setClearColor(new THREE.Color(COLOR.bg), 1);
   stage.appendChild(renderer.domElement);
 
-  // Caméra orthographique en unités « pixel » : le logotype tombe pile sur la
-  // grille de la dalle, sans flou de reprojection.
-  const camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, -3000, 3000);
+  // Caméra PERSPECTIVE, en unités « pixel-monde » (le logotype garde ses
+  // dimensions rasterisées). fov + distance calés pour que, vue de face, la
+  // dalle cadre le mot à ~110 %. C'est le passage 2.5D -> vraie 3D : les
+  // particules ont enfin une profondeur qui se lit (parallaxe, point size
+  // atténué par la distance), et la caméra bouge dans la scène.
+  const FOV = 42;
+  const aspect = W / H;
+  // Distance frontale : visibleHeight = 2*d*tan(fov/2) doit couvrir ~1,1*H.
+  const D0 = (H * 1.10 * 0.5) / Math.tan((FOV * Math.PI / 180) / 2);
+  const camera = new THREE.PerspectiveCamera(FOV, aspect, 1, 6000);
+  camera.position.set(0, 15, D0 * 1.16);
+  camera.lookAt(0, 0, 0);
   const scene = new THREE.Scene();
+
+  // Focale en pixels pour l'atténuation du point size côté shader (near = gros,
+  // far = petit) : c'est ce qui fait « exister » la profondeur des particules.
+  const FOCAL = D0;
+
+  // ---- chorégraphie caméra --------------------------------------------------
+  //  Actes : 1 statique de face (la ligne de balayage DOM doit rester calée) ;
+  //  2 plongée traversante dans le nuage ; 3 remontée qui se pose de face au
+  //  moment où les lettres se verrouillent ; 4 léger travelling avant ;
+  //  5 recul sur l'onde de choc. Interpolation smoothstep entre images-clés.
+  const KF = [
+    { t: 0.0,                 p: [0, 15, D0 * 1.16], l: [0, 0, 0] },
+    { t: ACT.igniteEnd,       p: [0, 15, D0 * 1.08], l: [0, 0, 0] },
+    { t: (ACT.igniteEnd + ACT.seekEnd) * 0.5,
+                              p: [330, 165, 285],    l: [-55, 12, 0] },   // traversée
+    { t: ACT.lockStart,       p: [150, 72, 520],     l: [-14, 6, 0] },
+    { t: ACT.lockEnd,         p: [0, 10, D0],        l: [0, 0, 0] },      // posée de face
+    { t: ACT.settleEnd,       p: [0, 4, D0 * 0.93],  l: [0, 0, 0] },      // travelling avant
+    { t: 1.0,                 p: [0, 12, D0 * 1.14], l: [0, -6, 0] },     // recul décharge
+  ];
+  const _smooth = (a) => a * a * (3 - 2 * a);
+  const _tmpP = new THREE.Vector3();
+  const _tmpL = new THREE.Vector3();
+  function poseCamera(t, timeSec) {
+    let i = 0;
+    while (i < KF.length - 1 && t > KF[i + 1].t) i++;
+    const a = KF[i], b = KF[Math.min(i + 1, KF.length - 1)];
+    const span = Math.max(b.t - a.t, 1e-4);
+    const k = _smooth(Math.min(Math.max((t - a.t) / span, 0), 1));
+    _tmpP.set(
+      a.p[0] + (b.p[0] - a.p[0]) * k,
+      a.p[1] + (b.p[1] - a.p[1]) * k,
+      a.p[2] + (b.p[2] - a.p[2]) * k);
+    // Respiration continue, forte pendant la traversée, quasi nulle une fois posé.
+    const sway = (t > ACT.igniteEnd && t < ACT.lockEnd) ? 1 : 0.12;
+    _tmpP.x += Math.sin(timeSec * 1.3) * 7 * sway;
+    _tmpP.y += Math.cos(timeSec * 1.7) * 5 * sway;
+    camera.position.copy(_tmpP);
+    _tmpL.set(
+      a.l[0] + (b.l[0] - a.l[0]) * k,
+      a.l[1] + (b.l[1] - a.l[1]) * k,
+      a.l[2] + (b.l[2] - a.l[2]) * k);
+    camera.lookAt(_tmpL);
+  }
 
   // ---- attributs -----------------------------------------------------------
   const n = Math.min(COUNT, sample.count);
@@ -310,75 +437,48 @@ function run() {
   const lockStart = new Float32Array(n);
   const lockDur = new Float32Array(n);
 
-  const cAccent = new THREE.Color(COLOR.accent);
-  const cInput = new THREE.Color(COLOR.input);
-  const cText = new THREE.Color(COLOR.text);
-  const cEdge = new THREE.Color(COLOR.accent).lerp(new THREE.Color(COLOR.input), 0.40);
+  const span = ACT.lockEnd - ACT.lockStart;
+  const oyTop = sample.oyTop, logoH = sample.logoH;
 
   for (let i = 0; i < n; i++) {
-    const src = Math.floor(i * stride) * 4;
-    const px = sample.pts[src];
-    const py = sample.pts[src + 1];
-    const letter = sample.pts[src + 2];
-    const isEdge = sample.pts[src + 3] === 1;
-    const isRule = letter < 0;
+    const idx = Math.floor(i * stride);
+    const px = sample.px[idx], py = sample.py[idx];
+    const isEdge = sample.ed[idx] === 1;
+    const yN = (py - oyTop) / logoH;          // 0 haut .. 1 bas (mitre -> base)
 
     const tx = px - W / 2;
     const ty = H / 2 - py;
+    // Léger slab d'épaisseur : donne du relief à la mascotte pendant l'approche
+    // caméra en biais (actes 2-3) ; bords poussés vers l'avant.
+    const slab = (Math.random() * 2 - 1) * 8;
     target[i * 3] = tx;
     target[i * 3 + 1] = ty;
-    target[i * 3 + 2] = 0;
+    target[i * 3 + 2] = slab + (isEdge ? 5 : 0);
 
-    // ACTE 1 — naissance sur la ligne de balayage : la particule apparaît à
-    // SA hauteur finale, mais n'importe où en x. Le balayage « révèle » donc
-    // la bande horizontale où elle vit avant qu'elle ne trouve sa colonne.
+    // ACTE 1 — naissance révélée par la ligne de balayage (hauteur finale, x libre).
     birthPos[i * 3] = (Math.random() - 0.5) * W * 1.15;
     birthPos[i * 3 + 1] = ty + (Math.random() - 0.5) * 5;
     birthPos[i * 3 + 2] = (Math.random() - 0.5) * 90;
 
-    // ACTE 2 — ancre de dérive : un nuage large et profond vers lequel la
-    // particule s'éloigne avant d'être rappelée.
+    // ACTE 2 — nébuleuse de dérive : coeur dense, profondeur creusée.
     const ang = Math.random() * Math.PI * 2;
-    // pow(r, 0.6) concentre vers le centre : une nébuleuse a un coeur, une
-    // distribution uniforme n'en a pas et ressemble à du bruit.
-    const rad = 130 + Math.pow(Math.random(), 0.6) * 360;
-    scatter[i * 3] = Math.cos(ang) * rad * 0.95;
-    scatter[i * 3 + 1] = Math.sin(ang) * rad * 0.42;   // aplati, comme le mot
-    scatter[i * 3 + 2] = (Math.random() - 0.5) * 1900; // profondeur creusée
+    const rad = 130 + Math.pow(Math.random(), 0.6) * 380;
+    scatter[i * 3] = Math.cos(ang) * rad * 0.9;
+    scatter[i * 3 + 1] = Math.sin(ang) * rad * 0.7;
+    scatter[i * 3 + 2] = (Math.random() - 0.5) * 1900;
 
     seed[i] = Math.random() * 6.2831;
-    // Naissance étalée sur l'acte 1. 40 % de l'ordre vient de la hauteur
-    // finale (le balayage garde son sens de lecture haut -> bas), 60 % est
-    // aléatoire : sans ça la ligne traverse 480 px en n'émettant que sur la
-    // bande de 100 px qu'occupe le logotype, et les 3/4 du balayage sont vides.
-    birth[i] = (0.4 * (py / H) + 0.6 * Math.random()) * ACT.igniteEnd;
+    // naissance étalée sur l'acte 1, ordonnée haut -> bas
+    birth[i] = (0.45 * yN + 0.55 * Math.random()) * ACT.igniteEnd;
 
-    if (isRule) {
-      // ACTE 4 — le filet se trace de gauche à droite.
-      const xNorm = (px - sample.ruleX) / Math.max(sample.ruleW, 1);
-      lockStart[i] = ACT.settleStart + xNorm * (ACT.settleEnd - ACT.settleStart) * 0.55;
-      lockDur[i] = (ACT.settleEnd - ACT.settleStart) * 0.35;
-    } else {
-      // ACTE 3 — une lettre après l'autre. L'étalement occupe 60 % de l'acte,
-      // le reste laisse à la dernière lettre le temps de se poser.
-      const span = ACT.lockEnd - ACT.lockStart;
-      lockStart[i] = ACT.lockStart
-        + (letter / Math.max(sample.letterCount, 1)) * span * 0.6
-        + Math.random() * span * 0.05;
-      lockDur[i] = span * 0.4;
-    }
+    // ACTE 3 — assemblage de la mascotte, haut -> bas (la mitre se pose d'abord).
+    lockStart[i] = ACT.lockStart + yN * span * 0.55 + Math.random() * span * 0.06;
+    lockDur[i] = span * 0.42;
 
-    // Une seule couleur d'accent domine. Les bords virent vers le rose : c'est
-    // une aberration chromatique, pas une seconde couleur de marque.
-    let col = cAccent;
-    const r = Math.random();
-    if (isRule) col = cAccent;
-    else if (isEdge && r < 0.45) col = cEdge;
-    else if (r < 0.04) col = cInput;
-    else if (r < 0.13) col = cText;
-    colors[i * 3] = col.r;
-    colors[i * 3 + 1] = col.g;
-    colors[i * 3 + 2] = col.b;
+    // couleurs : celles du logo lui-même (léger gain pour l'additif).
+    colors[i * 3]     = Math.min(1, (sample.rr[idx] / 255) * 1.12);
+    colors[i * 3 + 1] = Math.min(1, (sample.gg[idx] / 255) * 1.12);
+    colors[i * 3 + 2] = Math.min(1, (sample.bb[idx] / 255) * 1.12);
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -401,6 +501,7 @@ function run() {
       uDischarge: { value: 0 },
       uOpacity: { value: 1 },
       uSize: { value: 3.0 },
+      uFocal: { value: FOCAL },     // atténuation perspective du point size
       uMap: { value: sprite },
       uScanY: { value: 0 },        // position de la ligne de balayage, en unités monde
       uSeekEnd: { value: ACT.seekEnd },
@@ -418,7 +519,7 @@ function run() {
       attribute float aLockStart;
       attribute float aLockDur;
 
-      uniform float uT, uTime, uGlitch, uDischarge, uSize, uScanY, uSeekEnd;
+      uniform float uT, uTime, uGlitch, uDischarge, uSize, uScanY, uSeekEnd, uFocal;
 
       varying vec3  vColor;
       varying float vLock;    // 0 en vol, 1 posée
@@ -480,13 +581,13 @@ function run() {
         vec4 mv = modelViewMatrix * vec4(pos, 1.0);
         gl_Position = projectionMatrix * mv;
 
-        // Profondeur simulée : loin = plus gros et plus diffus (bokeh pauvre),
-        // proche et posé = petit et net. C'est ce qui donne le relief.
-        float depth = 1.0 + abs(pos.z) * 0.0016;
-        // Loin = plus gros ET plus faible : c'est ce couple qui fait la
-        // profondeur de champ. La taille seule ne donne qu'un aplat plus épais.
-        vDepthFade = 1.0 - clamp(abs(pos.z) / 1500.0, 0.0, 0.78);
-        gl_PointSize = uSize * (1.0 + rest * 1.2) * depth * vAlive;
+        // Point size PERSPECTIF : atténué par la distance réelle à la caméra
+        // (uFocal / -mv.z). En vol une particule reste plus grosse (rest) et
+        // diffuse ; posée, elle est petite et nette. C'est le vrai relief.
+        float distFactor = uFocal / max(-mv.z, 1.0);
+        // Profondeur de champ pauvre : loin (dans le nuage) = plus faible.
+        vDepthFade = 1.0 - clamp((-mv.z - uFocal) / 2200.0, 0.0, 0.72);
+        gl_PointSize = uSize * (1.0 + rest * 1.4) * distFactor * vAlive;
       }
     `,
     fragmentShader: `
@@ -522,12 +623,51 @@ function run() {
   const points = new THREE.Points(geometry, material);
   scene.add(points);
 
+  // ---- grille en perspective (sol) -----------------------------------------
+  //  Un plan de lignes sous le logotype, qui fuit vers l'horizon. C'est le
+  //  repère de profondeur le plus fort de la scène : sans lui la 3D des
+  //  particules seules se lit mal. Il remplace, en volume, le simple filet
+  //  d'accent 2D. Additif, fin, révélé du proche au lointain à l'acte 4.
+  const grid = makeGrid(H * 0.36);
+  scene.add(grid.mesh);
+
+  // ---- mascotte nette (logo détouré) ---------------------------------------
+  //  Les particules RECONSTITUENT la mascotte ; à l'assise, sa version NETTE se
+  //  révèle par-dessus, exactement au même cadrage, et les particules s'effacent
+  //  derrière elle. La texture vient de l'image DÉJÀ chargée (pas de 2e requête).
+  //  Plan face caméra, alpha normal (couleurs vraies), rendu après les particules.
+  const logo = { ready: false, mesh: null, mat: null, tex: null };
+  {
+    const tex = new THREE.Texture(img);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    const ph = H * 0.74, pw = ph * (img.width / img.height);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0, depthTest: false, depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), mat);
+    mesh.position.set(0, 0, 0);           // centré (même cadrage que les particules)
+    mesh.renderOrder = 2;                 // par-dessus particules (0) et grille (-1)
+    scene.add(mesh);
+    logo.mesh = mesh; logo.mat = mat; logo.tex = tex; logo.ready = true;
+  }
+
   function dispose() {
     renderer.setAnimationLoop(null);
     geometry.dispose();
     material.dispose();
     sprite.dispose();
     scene.remove(points);
+    scene.remove(grid.mesh);
+    grid.dispose();
+    if (logo.mesh) {
+      scene.remove(logo.mesh);
+      logo.mesh.geometry.dispose();
+      logo.mat.dispose();
+      logo.tex.dispose();
+    }
     scene.clear();
     renderer.dispose();
     // Destruction explicite du contexte : sans ça le pilote garde le GPU
@@ -589,13 +729,39 @@ function run() {
       typeTagline(p);
     }
 
-    // ACTE 5 — décharge et extinction.
+    // ACTE 4 — la MASCOTTE se révèle par-dessus ; le logotype-particules
+    // s'efface pour ne pas dépasser derrière elle (easeOutExpo).
+    if (t >= ACT.settleStart) {
+      const sp = Math.min((t - ACT.settleStart) / ((ACT.settleEnd - ACT.settleStart) * 0.8), 1);
+      const e = sp >= 1 ? 1 : 1 - Math.pow(2, -10 * sp);
+      if (logo.ready) { logo.mat.opacity = e; logo.mesh.scale.setScalar(1 + (1 - e) * 0.05); }
+      material.uniforms.uOpacity.value = 1 - 0.85 * e;   // le mot recule derrière la mascotte
+    }
+
+    // ACTE 5 — décharge et extinction (mot, mascotte, grille).
+    let gridOp = 1;
     if (t >= ACT.dischargeStart) {
       const p = Math.min((t - ACT.dischargeStart) / (1 - ACT.dischargeStart), 1);
       material.uniforms.uDischarge.value = p * p;
-      material.uniforms.uOpacity.value = 1 - p;
+      material.uniforms.uOpacity.value *= (1 - p);
+      if (logo.ready) logo.mat.opacity *= (1 - p);
       tagline.style.opacity = String(1 - p);
+      gridOp = 1 - p;
     }
+
+    // La caméra parcourt sa trajectoire (traversée -> arrivée de face -> recul).
+    poseCamera(t, ms / 1000);
+
+    // Grille en perspective : déployée à l'acte 4, éteinte à l'acte 5. Son
+    // opacité est découplée du mot (qui, lui, s'efface dès l'assise).
+    if (t >= ACT.settleStart) {
+      const gp = Math.min((t - ACT.settleStart) / ((ACT.settleEnd - ACT.settleStart) * 0.85), 1);
+      grid.uniforms.uReveal.value = gp;
+    } else {
+      grid.uniforms.uReveal.value = 0;
+    }
+    grid.uniforms.uOp.value = gridOp;
+    grid.uniforms.uTime.value = ms / 1000;
 
     renderer.render(scene, camera);
 
@@ -631,6 +797,86 @@ function makeSpriteTexture() {
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
   return tex;
+}
+
+/** Grille en perspective (sol synthwave) sous le logotype. Lignes additives
+ *  fines qui fuient vers l'horizon ; révélées du proche au lointain (uReveal),
+ *  fondues à la décharge (uOp). C'est le repère de profondeur de la scène. */
+function makeGrid(fontSize) {
+  const GROUND_Y = -(fontSize * 1.15);
+  const GW = 560;                 // demi-largeur
+  const NEAR_Z = 140;             // vers la caméra
+  const FAR_Z = -1200;            // vers l'horizon
+  const NX = 22;                  // lignes fuyantes (constante en x)
+  const NZ = 22;                  // lignes transversales (constante en z)
+
+  const verts = [];
+  const fades = [];
+  const fadeOf = (z) => (NEAR_Z - z) / (NEAR_Z - FAR_Z);   // 0 proche .. 1 loin
+
+  // Lignes transversales (le long de X, à z constant).
+  for (let i = 0; i < NZ; i++) {
+    // Espacement non linéaire : plus serré au loin, comme une vraie fuite.
+    const f = i / (NZ - 1);
+    const z = NEAR_Z + (FAR_Z - NEAR_Z) * Math.pow(f, 0.72);
+    verts.push(-GW, GROUND_Y, z, GW, GROUND_Y, z);
+    const fd = fadeOf(z);
+    fades.push(fd, fd);
+  }
+  // Lignes fuyantes (le long de Z, à x constant).
+  for (let i = 0; i < NX; i++) {
+    const x = -GW + (2 * GW) * (i / (NX - 1));
+    verts.push(x, GROUND_Y, NEAR_Z, x, GROUND_Y, FAR_Z);
+    fades.push(fadeOf(NEAR_Z), fadeOf(FAR_Z));
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+  g.setAttribute('aFade', new THREE.BufferAttribute(new Float32Array(fades), 1));
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(COLOR.accent) },
+      uReveal: { value: 0 },
+      uOp: { value: 1 },
+      uTime: { value: 0 },
+    },
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      attribute float aFade;
+      varying float vFade;
+      void main() {
+        vFade = aFade;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision mediump float;
+      uniform vec3 uColor; uniform float uReveal, uOp, uTime;
+      varying float vFade;
+      void main() {
+        // Révélation proche -> lointain : dessiné là où vFade < uReveal.
+        float vis = smoothstep(uReveal + 0.05, uReveal - 0.03, vFade);
+        float near = 1.0 - vFade;                 // proche = plus vif
+        // Pouls lent qui court vers l'horizon, très discret.
+        float pulse = 0.85 + 0.15 * sin(vFade * 22.0 - uTime * 3.0);
+        float a = near * near * 0.9 * vis * uOp * pulse;
+        if (a < 0.012) discard;
+        gl_FragColor = vec4(uColor * (0.45 + 0.55 * near), a);
+      }
+    `,
+  });
+
+  const mesh = new THREE.LineSegments(g, mat);
+  mesh.renderOrder = -1;          // derrière les particules
+  return {
+    mesh,
+    uniforms: mat.uniforms,
+    dispose() { g.dispose(); mat.dispose(); },
+  };
 }
 
 // ---------------------------------------------------------------------------
