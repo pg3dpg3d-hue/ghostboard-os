@@ -85,7 +85,8 @@ for f in tools/ghost-claude tools/ghost-browser tools/ghost-status tools/ghost-t
   bash -n "$f" 2>/dev/null; ck "shell $f" $?
 done
 for f in theme/ghostpalette.py theme/render-theme.py tools/ghost-bench tools/ghost-bruce \
-         tools/ghost-hand runtime/hand_tracking.py; do
+         tools/ghost-hand runtime/hand_tracking.py runtime/hand_pipeline.py \
+         runtime/hand_events.py runtime/hand_desktop.py install/hand-deps.py; do
   python3 -c "import ast,sys;ast.parse(open(sys.argv[1]).read())" "$f" 2>/dev/null
   ck "python $f" $?
 done

@@ -305,21 +305,33 @@ ghost-hand benchmark --seconds 30
 thumb-middle pinch = right click; double pinch = double-click; held pinch =
 drag-and-drop; two fingers = scroll; open palm = immediate pause; horizontal
 swipe = switch desktop. **Presentation mode** — swipe changes slide, index is a
-pointer, palm hides/shows it. **Spatial mode** feeds validated JSON commands to a
-loopback-only channel for GHOSTBOARD Spatial (see below).
+pointer, palm hides/shows it (real XFixes cursor hide). **Spatial mode** feeds
+validated JSON commands (select, rotate/tilt, zoom, explode) to an authenticated
+loopback-only bridge for GHOSTBOARD Spatial (see below).
+
+**Two hands.** A persistent **driver hand** (kept by handedness + proximity, with
+a switch delay) stops the cursor jumping to the other hand on a momentary
+confidence spike; two hands together **zoom** relative to a reference set when the
+gesture starts. Four-corner calibration measures real index positions and builds
+a **perspective homography**, so the usable area needn't be a camera-parallel
+rectangle.
 
 **Safety.** A five-state machine — `DISABLED → ARMED → ACTIVE ⇄ PAUSED`, plus
 `STOPPED` — governs every gesture. It obeys the same shared STOP file as the rest
 of Ghostboard: `ghost-system stop` or **Ctrl+Alt+Escape** instantly stops event
 injection, releases every held mouse button, and enters `STOPPED`; recovery
 needs `ghost-system resume` **and** a fresh local activation. Losing the hand, a
-camera close, or any exception also releases held buttons. Gestures never confirm
-a sensitive operation on their own (purchase, delete, send, credentials).
+camera close, or any exception also releases held buttons. A **system click into
+an external app requires holding F8** — the tracker cannot know what a button
+does, so it positions the pointer but does not click without that keyboard
+authorization. Gestures never confirm a sensitive operation on their own.
 
 **Engines.** A `HandTrackerBackend` interface makes the tracker pluggable:
-**MediaPipe Hand Landmarker** is the first engine, a **simulated** backend powers
-the tests, and there is a documented slot for future **Hailo** acceleration —
-not claimed until a compatible model is actually integrated and tested.
+**MediaPipe Hand Landmarker (Tasks, VIDEO mode)** is the first engine — its model
+is provisioned locally by `install/hand-deps.py`, never downloaded at runtime — a
+**simulated** backend powers the tests, and there is a documented slot for future
+**Hailo** acceleration, not claimed until a compatible model is actually
+integrated and tested.
 
 ```bash
 python3 tests/test-hand-tracking.py   # synthetic 21-point sequences, no camera/Pi/X needed
