@@ -31,9 +31,8 @@ La génération du thème a produit les ressources GTK, XFWM, rofi, palette et b
 - Enregistrement ALSA et transcription réelle par whisper.cpp.
 - Contrôle réel d’une application X11, session Xvfb séparée et verrouillage du bureau.
 - Appels à un fournisseur IA réel, stockage dans le trousseau Linux et inférence locale sur Pi.
-- CI GitHub : le workflow est fourni, mais n’a pas été déclenché.
 
-Le workflow `.github/workflows/pi5-validation.yml` prépare un conteneur Debian 13 avec Xvfb et inclut une saisie réellement reçue par xterm, une capture PNG et la résolution des paquets. Cette CI vérifie le logiciel x86_64, pas le matériel ARM64.
+Le workflow `.github/workflows/pi5-validation.yml` a réussi sur la branche publiée. Il prépare un conteneur Debian 13 avec Xvfb et inclut une saisie réellement reçue par xterm, une capture PNG et la résolution des paquets. Cette CI vérifie le logiciel x86_64, pas le matériel ARM64.
 
 Pour valider X11 sur Linux :
 
