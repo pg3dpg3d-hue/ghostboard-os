@@ -19,18 +19,18 @@ nodejs npm xserver-xorg x11-utils x11-xserver-utils xinit dbus-x11
 xfwm4 xfce4-session xfdesktop4 xfce4-panel xfce4-settings xfce4-terminal
 xfce4-appfinder xfce4-screenshooter xfce4-whiskermenu-plugin xfce4-notifyd
 xfce4-power-manager xfce4-screensaver xfce4-taskmanager thunar thunar-archive-plugin
-lightdm lightdm-gtk-greeter network-manager network-manager-gnome bluez blueman
-pipewire-audio wireplumber pavucontrol alsa-utils polkitd pkexec gnome-keyring
+lightdm lightdm-gtk-greeter network-manager network-manager-gnome bluez blueman openssh-server
+pipewire-audio wireplumber pavucontrol alsa-utils espeak-ng polkitd pkexec gnome-keyring
 libpam-gnome-keyring libsecret-tools at-spi2-core xdg-desktop-portal xdg-desktop-portal-gtk
 xdg-utils desktop-file-utils gvfs gvfs-backends udisks2 upower
 rofi wmctrl scrot xdotool xvfb xauth chromium mousepad galculator
 papirus-icon-theme adwaita-icon-theme fonts-dejavu-core fontconfig librsvg2-bin
 librsvg2-common unzip zip file rsync htop openssh-client cryptsetup'''.split()
 FULL = '''build-essential cmake pkg-config libcurl4-openssl-dev gdb tmux ripgrep jq sqlite3
-python3-pip python3-dev python3-gpiozero i2c-tools usbutils pciutils
+python3-pip python3-dev python3-gpiozero i2c-tools usbutils pciutils v4l-utils poppler-utils
 libreoffice-writer libreoffice-calc libreoffice-impress evince vlc
 keepassxc engrampa gnome-disk-utility ffmpeg'''.split()
-TOOLS = ['ghost-system', 'ghost-assistant', 'ghost-control-center', 'ghost-model', 'ghost-browser',
+TOOLS = ['ghost-system', 'ghost-assistant', 'ghost-control-center', 'ghost-model', 'ghost-hardware', 'ghost-voice', 'ghost-remote', 'ghost-workspace', 'ghost-codex', 'ghost-browser',
          'ghost-bruce', 'ghost-run', 'ghost-llm', 'ghost-llm-proxy', 'ghost-claude',
          'ghost-bench', 'ghost-status', 'ghost-theme', 'ghost-vault']
 
@@ -41,8 +41,8 @@ def plan(profile):
         'profile': profile, 'packages': BASE + (FULL if profile == 'full' else []),
         'session': 'XFCE/X11 with LightDM',
         'preserved': ['Pi boot firmware', 'config.txt', 'cmdline.txt', 'kernel', 'native display mode', 'Bluetooth', 'accessibility', 'audio'],
-        'installed': ['control center', 'hybrid assistant', 'computer-use MCP', 'settings backup/restore', 'diagnostics', 'application launchers'],
-        'optional': ['Claude Code (--claude)', 'BlackBerry Q20 key mapping (--q20)'],
+        'installed': ['control center', 'hybrid, visual and voice assistant', 'computer-use MCP', 'Pi 5 telemetry and fan profiles', 'paired remote development', 'settings backup/restore', 'diagnostics', 'application launchers'],
+        'optional': ['Claude Code (--claude)', 'Codex CLI (--codex)', 'BlackBerry Q20 key mapping (--q20)'],
     }
 
 
@@ -99,7 +99,7 @@ class Installer:
         finally:
             Path(temp).unlink(missing_ok=True)
 
-    def deploy(self, q20=False, claude=False):
+    def deploy(self, q20=False, claude=False, codex=False):
         self.run(['apt-get', 'update'])
         self.run(['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y', '--no-install-recommends', *plan(self.profile)['packages']])
         fonts = subprocess.run(['apt-cache', 'policy', 'fonts-ibm-plex'], capture_output=True, text=True)
@@ -198,8 +198,15 @@ WantedBy=default.target
             listing = subprocess.run(['runuser', '-u', self.user, '--', str(claude_bin), 'mcp', 'get', 'ghostboard-computer-use-pi5'], capture_output=True)
             if listing.returncode != 0:
                 self.run([claude_bin, 'mcp', 'add', '--scope', 'user', 'ghostboard-computer-use-pi5', '--', 'node', '/usr/local/lib/ghostboard/mcp-computer-use/server.js'], user=True)
+        if codex:
+            self.run(['npm', 'install', '--prefix', self.home / '.local', '@openai/codex'], user=True)
+            codex_bin = self.home / '.local/node_modules/.bin/codex'
+            self.put('/usr/local/bin/codex', '#!/bin/sh\nexec "' + str(codex_bin) + '" "$@"\n', 0o755)
+            listing = subprocess.run(['runuser', '-u', self.user, '--', str(codex_bin), 'mcp', 'get', 'ghostboard-computer-use-pi5'], capture_output=True)
+            if listing.returncode != 0:
+                self.run([codex_bin, 'mcp', 'add', 'ghostboard-computer-use-pi5', '--', 'node', '/usr/local/lib/ghostboard/mcp-computer-use/server.js'], user=True)
         self.put('/etc/profile.d/ghostboard-pi5.sh', 'export GHOSTBOARD_REPO=/opt/ghostboard-os\nexport GHOSTBOARD_SHARE=/usr/share/ghostboard\n')
-        self.put('/var/lib/ghostboard/pi5-install.json', json.dumps({'version': '0.2.0-pi5-preview', 'profile': self.profile, 'user': self.user, 'backup': str(self.backup_dir)}, indent=2))
+        self.put('/var/lib/ghostboard/pi5-install.json', json.dumps({'version': '0.3.0-pi5-preview', 'profile': self.profile, 'user': self.user, 'backup': str(self.backup_dir)}, indent=2))
         print('\nInstalled. Log out/reboot and select GHOSTBOARD Pi 5. Then run ghost-system doctor.')
         print('Configuration backups: ' + str(self.backup_dir))
 
@@ -231,6 +238,7 @@ def main():
     ap.add_argument('--dry-run', action='store_true', help='Print plan only; no writes, packages or root needed.')
     ap.add_argument('--q20', action='store_true', help='Enable optional Right Alt/Super mapping for Q20 keyboard.')
     ap.add_argument('--claude', action='store_true', help='Also install Claude Code from npm; account setup is separate.')
+    ap.add_argument('--codex', action='store_true', help='Also install Codex CLI from npm; account setup is separate.')
     args = ap.parse_args()
     if args.dry_run:
         print(json.dumps(plan(args.profile), indent=2))
@@ -238,7 +246,8 @@ def main():
     if platform.system() != 'Linux' or os.geteuid() != 0:
         ap.error('Run with sudo on the Raspberry Pi. --dry-run works anywhere.')
     model = Path('/proc/device-tree/model')
-    if not model.exists() or 'Raspberry Pi 5' not in model.read_text():
+    image_build = os.environ.get('GHOSTBOARD_IMAGE_BUILD') == '1' and Path('/etc/ghostboard-image-build').exists()
+    if not image_build and (not model.exists() or 'Raspberry Pi 5' not in model.read_text()):
         ap.error('This installer only supports Raspberry Pi 5.')
     if platform.machine() not in ('aarch64', 'arm64'):
         ap.error('Install Raspberry Pi OS 64-bit first.')
@@ -258,7 +267,7 @@ def main():
             ap.error('Log out of XFCE before installing. Run from SSH or a text console so live settings cannot overwrite new files.')
         with open('/run/lock/ghostboard-pi5.lock', 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            Installer(args.user, account.pw_dir, args.profile).deploy(args.q20, args.claude)
+            Installer(args.user, account.pw_dir, args.profile).deploy(args.q20, args.claude, args.codex)
         return 0
     except (KeyError, OSError, ValueError, subprocess.CalledProcessError) as exc:
         print('Installation stopped: ' + str(exc), file=sys.stderr)

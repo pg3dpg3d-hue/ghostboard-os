@@ -12,7 +12,7 @@ import sys
 import tarfile
 import tempfile
 
-VERSION = '0.2.0-pi5-preview'
+VERSION = '0.3.0-pi5-preview'
 HOME = Path.home()
 STATE = HOME / '.local/state/ghostboard'
 STOP = STATE / 'agent.stop'
@@ -35,9 +35,14 @@ APPS = {
     'screenshots': ('Screenshot', ['xfce4-screenshooter']),
     'serial': ('Serial boards', ['xfce4-terminal', '--hold', '--execute', 'ghost-bruce', 'console']),
     'claude': ('Claude Code', ['xfce4-terminal', '--hold', '--execute', 'ghost-claude']),
+    'codex': ('Codex', ['xfce4-terminal', '--hold', '--execute', 'ghost-codex']),
     'local-ai': ('Local chat', ['xfce4-terminal', '--hold', '--execute', 'ghost-assistant', 'chat', '--provider', 'local']),
+    'local-vision': ('Local visual agent', ['xfce4-terminal', '--hold', '--execute', 'ghost-assistant', 'act', '--provider', 'local']),
     'assistant': ('Computer use', ['xfce4-terminal', '--hold', '--execute', 'ghost-assistant', 'act']),
     'ai-setup': ('Configure AI', ['xfce4-terminal', '--hold', '--execute', 'ghost-assistant', 'configure']),
+    'voice': ('Voice command', ['xfce4-terminal', '--hold', '--execute', 'ghost-voice', '--mode', 'act', '--provider', 'cloud']),
+    'hardware': ('Pi hardware', ['xfce4-terminal', '--hold', '--execute', 'ghost-hardware', 'status']),
+    'remote': ('Remote pairing', ['xfce4-terminal', '--hold', '--execute', 'ghost-remote', 'status']),
     'agent-browser': ('Agent browser', ['ghost-system', 'agent-screen', 'open', 'browser']),
     'agent-assistant': ('Agent screen task', ['xfce4-terminal', '--hold', '--execute', 'ghost-assistant', 'act', '--agent-screen']),
     'updates': ('System updates', ['xfce4-terminal', '--hold', '--execute', 'ghost-system', 'update']),

@@ -19,7 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'runtime'))
 import ghostboard as gb
 import assistant
+import hardware
 import model
+import remote
+import voice
 spec = importlib.util.spec_from_file_location('pi5', ROOT / 'install/pi5.py')
 pi5 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pi5)
@@ -98,6 +101,17 @@ class InstallerTests(unittest.TestCase):
         for tool in pi5.TOOLS:
             self.assertTrue((ROOT / 'tools' / tool).exists(), tool)
 
+    def test_image_recipe_is_pinned_and_has_no_password(self):
+        builder = (ROOT / 'image/build-image.sh').read_text()
+        config = (ROOT / 'image/rpi-image-gen/config/ghostboard.yaml').read_text()
+        layer = (ROOT / 'image/rpi-image-gen/layer/ghostboard-pi5.yaml').read_text()
+        self.assertIn('PIN=262d4df5a9f9d4133370465399a7958a7c22cdc7', builder)
+        self.assertIn('base: trixie-minbase', config)
+        self.assertIn('layer: rpi5', config)
+        self.assertNotIn('user1passhash:', config)
+        self.assertIn('/etc/ghostboard-image-build', layer)
+        self.assertIn('GHOSTBOARD_IMAGE_BUILD=1', layer)
+
     def test_keyboard_idempotent_and_preserves_custom(self):
         import xml.etree.ElementTree as ET
         xml = b'<channel name="xfce4-keyboard-shortcuts"><property name="commands"><property name="custom"><property name="custom-key" value="custom-command"/></property></property></channel>'
@@ -116,7 +130,81 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)['profile'], 'full')
 
 
+class HardwareTests(unittest.TestCase):
+    def test_fan_profile_block_is_reversible_and_idempotent(self):
+        original = '# user setting\ndtoverlay=vc4-kms-v3d\n'
+        profiled = hardware.replace_block(original, hardware.PROFILES['balanced'])
+        self.assertIn('# user setting', profiled)
+        self.assertIn('fan_temp2=67500', profiled)
+        self.assertEqual(hardware.replace_block(profiled, hardware.PROFILES['balanced']), profiled)
+        self.assertEqual(hardware.replace_block(profiled, []), original)
+
+
+class ModelTests(unittest.TestCase):
+    def test_multimodal_projector_enables_local_vision(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            weights = root / 'vision.gguf'
+            projector = root / 'mmproj.gguf'
+            server = root / 'llama-server'
+            weights.write_bytes(b'GGUFweights')
+            projector.write_bytes(b'GGUFprojector')
+            server.write_text('#!/bin/sh\n')
+            server.chmod(0o755)
+            config = root / 'assistant.json'
+            with patch.object(Path, 'home', return_value=root), patch.object(model, 'CONFIG', config), \
+                 patch.object(model.subprocess, 'run'):
+                model.configure(weights, server, projector)
+            unit = (root / '.config/systemd/user/ghostboard-local-model.service').read_text()
+            self.assertIn('--mmproj', unit)
+            self.assertIn('-c 4096', unit)
+            self.assertTrue(json.loads(config.read_text())['providers']['local']['vision'])
+
+
+class VoiceTests(unittest.TestCase):
+    def test_configuration_is_private(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            model_file = root / 'whisper.gguf'
+            model_file.write_bytes(b'model')
+            config = root / 'voice.json'
+            with patch.object(voice, 'CONFIG', config), contextlib.redirect_stdout(io.StringIO()):
+                voice.configure(model_file, 'default', 'fr')
+            self.assertEqual(json.loads(config.read_text())['model'], str(model_file.resolve()))
+            if os.name != 'nt':
+                self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+
+    def test_denied_transcript_never_reaches_assistant(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            model_file = root / 'whisper.gguf'
+            model_file.write_bytes(b'model')
+            config = root / 'voice.json'
+            config.write_text(json.dumps({'model': str(model_file), 'device': 'default', 'language': 'fr'}))
+            argv = ['ghost-voice', '--seconds', '1']
+            with patch.object(voice, 'CONFIG', config), patch.object(sys, 'argv', argv), \
+                 patch.object(voice, 'record'), patch.object(voice, 'transcribe', return_value='ouvre le navigateur'), \
+                 patch('builtins.input', return_value='n'), patch.object(voice.subprocess, 'call') as call, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(voice.main(), 1)
+            call.assert_not_called()
+
 class AssistantTests(unittest.TestCase):
+    def test_visual_input_checks_real_file_signature(self):
+        part = assistant.image_data(b'\x89PNG\r\n\x1a\n' + b'data')
+        self.assertTrue(part['image_url']['url'].startswith('data:image/png;base64,'))
+        with self.assertRaises(ValueError):
+            assistant.image_data(b'not an image')
+
+    def test_local_visual_analysis_needs_no_share_prompt(self):
+        provider = {'base_url': 'http://127.0.0.1:8080/v1', 'model': 'visual', 'vision': True}
+        png = assistant.image_data(b'\x89PNG\r\n\x1a\n' + b'data')
+        with patch.object(assistant, 'screen_image', return_value=png), \
+             patch.object(assistant, 'completion', return_value={'content': 'visible'}), \
+             patch('builtins.input') as ask, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(assistant.see(provider, 'describe', ('screen', None)), 0)
+        ask.assert_not_called()
+
     def test_systemd_path_escaping(self):
         self.assertEqual(model.quote('/models/50% $test.gguf'), '"/models/50%% $$test.gguf"')
         with self.assertRaises(ValueError):
@@ -201,6 +289,22 @@ class AssistantTests(unittest.TestCase):
                 self.assertTrue(stop.exists())
                 gb.set_stopped(False)
                 self.assertFalse(stop.exists())
+
+
+class RemoteTests(unittest.TestCase):
+    def test_codex_and_claude_use_the_same_remote_mcp(self):
+        for tool, prefix in [('codex', 'codex mcp add'), ('claude', 'claude mcp add')]:
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                remote.client_config(tool, 'ghostboard.example.ts.net', 'ghost')
+            command = stream.getvalue()
+            self.assertIn(prefix, command)
+            self.assertIn('ssh -T ghost@ghostboard.example.ts.net', command)
+            self.assertIn('mcp-computer-use/server.js', command)
+
+    def test_remote_host_is_not_shell_text(self):
+        with self.assertRaises(ValueError):
+            remote.client_config('codex', 'host;touch /tmp/bad', 'ghost')
 
 
 if __name__ == '__main__':

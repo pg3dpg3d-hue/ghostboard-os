@@ -1,0 +1,16 @@
+device:
+  layer: rpi5
+  hostname: ghostboard
+  user1: ghost
+  user1sudo: passwd
+
+layer:
+  base: trixie-minbase
+  ghostboard: ghostboard-pi5
+
+image:
+  layer: image-rpios
+  boot_part_size: 200%
+  root_part_size: 1200%
+  name: ghostboard-pi5
+  compression: zstd

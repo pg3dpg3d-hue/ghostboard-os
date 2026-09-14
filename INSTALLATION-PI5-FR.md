@@ -1,4 +1,4 @@
-# GHOSTBOARD Pi 5 — 0.2.0, version de développement
+# GHOSTBOARD Pi 5 — 0.3.0, version de développement
 
 Cette livraison ajoute au projet une édition Raspberry Pi 5 installable **sur Raspberry Pi OS 64 bits basé sur Debian 13**. Elle comprend les sources complètes et un installateur. Une carte microSD ou un SSD contenant déjà Raspberry Pi OS est nécessaire. Aucune image disque préinstallée n'est fournie.
 
@@ -11,7 +11,7 @@ Le démarrage réel, l'affichage HDMI/DSI, l'audio, le Bluetooth et les performa
 3. Copier l'archive fournie sur le Pi et l'extraire :
 
 ```bash
-tar -xzf GHOSTBOARD-Pi5-0.2.0.tar.gz
+tar -xzf GHOSTBOARD-Pi5-0.3.0.tar.gz
 cd ghostboard-os
 bash install/ghostboard-pi5.sh --dry-run
 sudo bash install/ghostboard-pi5.sh --profile full --user "$USER"
@@ -34,8 +34,8 @@ Options supplémentaires :
 # Uniquement pour le clavier Q20 : Alt droite/Super
 sudo bash install/ghostboard-pi5.sh --profile full --user "$USER" --q20
 
-# Installation optionnelle de Claude Code via npm, puis connexion au compte séparément
-sudo bash install/ghostboard-pi5.sh --profile full --user "$USER" --claude
+# Installation optionnelle des deux agents de développement, puis connexion séparée aux comptes
+sudo bash install/ghostboard-pi5.sh --profile full --user "$USER" --codex --claude
 ```
 
 Utiliser **cet installateur Pi 5**. L'ancien `install/ghostboard-install.sh` reste le parcours Radxa/Intel et refuse désormais de s'exécuter sur Raspberry Pi.
@@ -55,6 +55,11 @@ Utiliser **cet installateur Pi 5**. L'ancien `install/ghostboard-install.sh` res
 | Clés API | Variable d'environnement ou trousseau du bureau ; aucune clé dans la configuration JSON |
 | Modèle local | Service utilisateur pour un `llama-server` et un modèle GGUF fournis par l'utilisateur |
 | Session agent | Écran X11 virtuel optionnel, séparé du pointeur du bureau |
+| Matériel | Télémétrie Pi et profils de ventilation réversibles pour le ventilateur officiel |
+| Voix | Enregistrement ALSA et transcription locale par whisper.cpp avant confirmation |
+| Vision locale | Écran, caméra, PNG/JPEG/WebP et première page PDF avec modèle multimodal llama.cpp |
+| Contrôle Internet | Appairage SSH ou Tailscale ; serveur MCP commun à Codex et Claude |
+| Image | Recette reproductible pour rpi-image-gen officiel, épinglé sur un commit connu |
 | Maintenance | Diagnostics, mises à jour apt, sauvegarde/restauration ciblée des réglages |
 | Compagnon | Console série et sources du firmware existant, conservées sans modification fonctionnelle |
 
@@ -99,7 +104,103 @@ ghost-model start
 ghost-assistant chat --provider local "Bonjour"
 ```
 
-Conserver le dossier du moteur : le service utilise ce chemin. `ghost-model enable` active le lancement aux prochaines sessions ; `stop`, `disable` et `status` pilotent le service. Le serveur écoute seulement sur `127.0.0.1:8080`, avec un contexte initial de 2 048 tokens. Ce parcours configure le **chat local textuel** ; le contrôle visuel nécessite un moteur/modèle et une configuration multimodale adaptés. Aucun débit ou niveau de qualité n'a été mesuré sur le Pi.
+Conserver le dossier du moteur : le service utilise ce chemin. `ghost-model enable` active le lancement aux prochaines sessions ; `stop`, `disable` et `status` pilotent le service. Le serveur écoute seulement sur `127.0.0.1:8080`, avec un contexte initial de 4 096 tokens. Ce parcours configure le **chat local textuel** ; le contrôle visuel nécessite un moteur/modèle et une configuration multimodale adaptés. Aucun débit ou niveau de qualité n'a été mesuré sur le Pi.
+
+## Agent visuel local
+
+Avec une version récente de `llama-server`, fournir un modèle visuel GGUF et le projecteur GGUF qui lui correspond exactement :
+
+```bash
+ghost-model configure /modeles/vision.gguf \
+  --mmproj /modeles/mmproj-vision.gguf \
+  --server /chemin/vers/llama-server
+ghost-model start
+
+# Comprendre l'écran sans agir
+ghost-assistant see --provider local --screen "Décris précisément ce qui est affiché"
+
+# Comprendre une caméra, une image ou la première page d'un PDF
+ghost-assistant see --provider local --camera /dev/video0 "Que vois-tu ?"
+ghost-assistant see --provider local --file manuel.pdf "Explique cette page"
+
+# Observer l'écran et le contrôler localement, avec confirmation des actions
+ghost-assistant act --provider local "Ouvre le gestionnaire de fichiers"
+```
+
+Les fichiers visuels sont limités à 16 Mio et vérifiés par leur signature. Le mode local envoie les images seulement au serveur lié à `127.0.0.1`. Un fournisseur distant demande une confirmation avant le partage. Le texte visible dans l'écran, la caméra ou le document est toujours marqué comme contenu non fiable. Le Pi 5 partage sa mémoire entre le bureau et le modèle ; commencer avec un modèle quantifié compact et mesurer la température, la RAM et la latence.
+
+## Commande vocale locale
+
+Installer `whisper-cli` pour ARM64 et télécharger soi-même un modèle whisper.cpp. Ghostboard n'embarque ni binaire ni poids tiers. Configurer ensuite le chemin et le microphone :
+
+```bash
+ghost-voice --configure /chemin/vers/ggml-small.bin --device default --language fr
+ghost-voice --mode chat --provider local
+ghost-voice --mode act --provider cloud --seconds 8
+```
+
+Le microphone est enregistré localement avec ALSA. La transcription est affichée et doit être confirmée avant d'être envoyée au modèle choisi. Les fichiers audio et texte temporaires sont supprimés à la fin. `--speak` utilise la voix hors ligne d'`espeak-ng` pour accuser réception.
+
+## Contrôle par Internet, Codex et Claude
+
+Le moteur de contrôle s'exécute sur le Pi : le PC principal peut donc être éteint. Le moyen recommandé est un réseau privé Tailscale, afin de ne pas publier SSH directement sur Internet. Installer Tailscale depuis sa documentation Linux officielle, connecter le Pi au compte, puis lancer :
+
+```bash
+sudo ghost-remote internet-enable
+ghost-remote status
+```
+
+Cette commande active `tailscaled`, connecte le Pi et active Tailscale SSH. La politique SSH du tailnet doit autoriser uniquement les comptes et appareils voulus. Depuis une machine déjà connectée au même tailnet, générer la commande d'enregistrement MCP :
+
+```bash
+ghost-remote client-config --tool codex --host ghostboard.nom-tailnet.ts.net --user ghost
+ghost-remote client-config --tool claude --host ghostboard.nom-tailnet.ts.net --user ghost
+```
+
+Exécuter la ligne produite sur la machine qui héberge Codex ou Claude. Les deux clients démarrent alors le même serveur MCP sur le Pi à travers SSH. Pour faire du Pi une machine de développement autonome, installer Codex CLI et Claude Code directement dessus, puis créer un dépôt de travail inscriptible :
+
+```bash
+sudo bash install/ghostboard-pi5.sh --profile full --user "$USER" --codex --claude
+ghost-workspace init
+ghost-workspace status
+ghost-codex
+ghost-claude
+```
+
+Les deux agents démarrent dans `~/Ghostboard`, un vrai clone Git de la branche Pi 5. Ils peuvent y lire et écrire le code, lancer les tests, créer des branches et préparer des commits. Les comptes Codex et Claude doivent être connectés séparément. Le dépôt système sous `/opt/ghostboard-os` reste la copie installée ; le développement se fait dans le clone utilisateur afin d'éviter les modifications root accidentelles. Après revue, réinstaller la branche testée pour appliquer les changements au système.
+
+Un appairage OpenSSH à clé publique reste disponible pour un réseau privé sans Tailscale :
+
+```bash
+sudo ghost-remote enable --user "$USER" --public-key ~/controleur.pub
+sudo ghost-remote disable --user "$USER"
+```
+
+La clé appairée donne les droits complets du compte de bureau. Le STOP physique ou `Ctrl+Alt+Échap` bloque les nouvelles commandes du serveur MCP. Une session Codex hébergée ailleurs doit être connectée au tailnet ou disposer d'un connecteur MCP HTTPS dédié ; cette conversation ne peut pas découvrir seule une adresse privée.
+
+## Matériel et ventilation
+
+```bash
+ghost-hardware status
+sudo ghost-hardware fan cool
+sudo ghost-hardware fan balanced
+sudo ghost-hardware fan quiet
+sudo ghost-hardware fan default
+```
+
+Les profils s'appliquent au ventilateur officiel géré par le firmware du Pi 5. La commande sauvegarde `config.txt`, remplace seulement son bloc Ghostboard et demande un redémarrage. `default` retire ce bloc pour revenir aux seuils du firmware Raspberry Pi. `quiet` autorise une température plus haute : la température et les alertes de sous-tension doivent être surveillées sur le cyberdeck assemblé.
+
+## Construire une image flashable
+
+La recette utilise `raspberrypi/rpi-image-gen` épinglé au commit `262d4df5a9f9d4133370465399a7958a7c22cdc7` (version 2.8.0 au moment de cette livraison). Le chemin pris en charge est un hôte Raspberry Pi OS/Debian 64 bits. Depuis la racine du dépôt :
+
+```bash
+# OpenSSL demande le mot de passe sans l'afficher et n'écrit que son empreinte.
+openssl passwd -6 > ~/ghostboard.passhash
+bash image/build-image.sh --password-hash-file ~/ghostboard.passhash --install-deps
+```
+
+Le script vérifie l'empreinte du mot de passe, prépare une source temporaire, construit une image Pi 5 Trixie et efface la configuration privée à la sortie. `--install-deps` autorise explicitement l'installation des dépendances de construction sur l'hôte. Sans cette option, elles doivent déjà être présentes. La recette elle-même est validée statiquement ici ; la génération complète reste à exécuter sur Linux.
 
 ## Écran dédié à l'agent
 

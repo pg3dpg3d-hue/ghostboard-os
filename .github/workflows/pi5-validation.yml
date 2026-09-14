@@ -21,6 +21,7 @@ jobs:
           python3 tests/test-pi5.py
           node tests/test-mcp-regressions.js
           python3 -m compileall -q runtime install/pi5.py
+          bash -n image/build-image.sh install/ghostboard-pi5.sh
       - name: Real X11 integration
         run: |
           xvfb-run -a -s '-screen 0 800x480x24 -nolisten tcp' node tests/test-mcp.js

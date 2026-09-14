@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+workspace="${GHOSTBOARD_DEV_REPO:-$HOME/Ghostboard}"
+command -v codex >/dev/null 2>&1 || { echo "Codex is not installed. Re-run the Pi installer with --codex." >&2; exit 1; }
+[[ -d "$workspace/.git" ]] || { echo "Run ghost-workspace init first." >&2; exit 1; }
+cd "$workspace"
+exec codex "$@"

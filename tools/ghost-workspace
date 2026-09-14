@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Prépare un dépôt Git inscriptible pour Codex et Claude sur le Pi.
+set -euo pipefail
+dest="${GHOSTBOARD_DEV_REPO:-$HOME/Ghostboard}"
+url="${GHOSTBOARD_DEV_URL:-https://github.com/pg3dpg3d-hue/ghostboard-os.git}"
+branch="${GHOSTBOARD_DEV_BRANCH:-codex/raspberry-pi5-edition}"
+case "${1:-status}" in
+  init)
+    [[ ! -e "$dest" ]] || { echo "Workspace already exists: $dest" >&2; exit 1; }
+    git clone --branch "$branch" --single-branch "$url" "$dest"
+    git -C "$dest" config pull.ff only
+    echo "Writable development workspace: $dest"
+    ;;
+  status)
+    [[ -d "$dest/.git" ]] || { echo "Workspace missing. Run: ghost-workspace init"; exit 1; }
+    git -C "$dest" status --short --branch
+    ;;
+  update)
+    [[ -d "$dest/.git" ]] || { echo "Workspace missing. Run: ghost-workspace init" >&2; exit 1; }
+    [[ -z "$(git -C "$dest" status --porcelain)" ]] || { echo "Commit or stash local work before updating." >&2; exit 1; }
+    git -C "$dest" pull --ff-only
+    ;;
+  *) echo "Usage: ghost-workspace {init|status|update}" >&2; exit 2 ;;
+esac

@@ -1,4 +1,4 @@
-# Validation — GHOSTBOARD Pi 5 0.2.0
+# Validation — GHOSTBOARD Pi 5 0.3.0
 
 Validation locale : Windows, Python 3.12, Node.js. Aucun Pi 5, serveur X11 Linux ou moteur IA distant disponible dans cette session.
 
@@ -13,17 +13,22 @@ Validation locale : Windows, Python 3.12, Node.js. Aucun Pi 5, serveur X11 Linux
 | Theme legibility and consistency | PASS |
 | Theme generation | PASS |
 | Pi installer dry run | PASS |
-| Shell syntax (22 scripts) | PASS |
+| Shell syntax (29 scripts) | PASS |
 | XFCE XML configuration | PASS |
 
-Les tests Python utilisent de vrais fichiers temporaires, un serveur HTTP local de test et le transport MCP réel. Les tests de régression MCP simulent uniquement les processus X11. Les widgets du centre de contrôle ont été créés sur Windows aux dimensions 760 × 430 et 800 × 480.
+Les tests Python utilisent de vrais fichiers temporaires, un serveur HTTP local de test et le transport MCP réel. Ils vérifient aussi la recette d’image, les profils de ventilation réversibles, la vision locale, le refus d’une commande vocale et les configurations MCP distantes de Codex et Claude. Les tests de régression MCP simulent uniquement les processus X11. Les widgets du centre de contrôle ont été créés sur Windows aux dimensions 760 × 430 et 800 × 480.
 
 La génération du thème a produit les ressources GTK, XFWM, rofi, palette et boutons PNG. Le convertisseur SVG → PNG n’est pas présent sur l’hôte Windows ; il figure dans les paquets de l’installateur Linux.
 
 ## Non exécuté ici
 
+- Construction complète de l’image avec rpi-image-gen, faute d’hôte Linux compatible dans cette session.
 - Installation apt complète sous Raspberry Pi OS et disponibilité finale de tous les paquets.
+- Installation et authentification réelles de Codex CLI, Claude Code et Tailscale sur ARM64.
 - Démarrage réel ARM64, connexion LightDM/XFCE, pilotes HDMI/DSI, Wi-Fi, Bluetooth, audio et batterie.
+- Télémétrie et réglage réel du ventilateur actif.
+- Capture caméra, lecture PDF et inférence multimodale réelle par llama.cpp.
+- Enregistrement ALSA et transcription réelle par whisper.cpp.
 - Contrôle réel d’une application X11, session Xvfb séparée et verrouillage du bureau.
 - Appels à un fournisseur IA réel, stockage dans le trousseau Linux et inférence locale sur Pi.
 - CI GitHub : le workflow est fourni, mais n’a pas été déclenché.
@@ -36,4 +41,4 @@ Pour valider X11 sur Linux :
 xvfb-run -a -s "-screen 0 800x480x24 -nolisten tcp" python3 tests/test-desktop-live.py
 ```
 
-Les performances du Pi n’ont pas été mesurées. La livraison est une version de développement installable sur un système de base existant, pas une image disque qualifiée.
+Les performances du Pi n’ont pas été mesurées. La livraison comprend un installateur et une recette d’image reproductible ; l’image elle-même doit encore être construite et qualifiée sur Linux puis démarrée sur un Pi 5.
