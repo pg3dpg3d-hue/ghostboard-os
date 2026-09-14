@@ -45,6 +45,15 @@ APP_DIRS = [
 # README : si un outil est ajouté, il doit apparaître ici pour être atteignable
 # au clavier.
 GHOST_COMMANDS = [
+    ("ghost-control-center", "Centre de contrôle du mini-PC", False),
+    ("ghost-assistant act", "Assistant avec contrôle du bureau", True),
+    ("ghost-assistant configure", "Configurer les modèles local et distant", True),
+    ("ghost-system doctor", "Diagnostiquer le Raspberry Pi et la session", True),
+    ("ghost-system stop", "Arrêter immédiatement le computer use", False),
+    ("ghost-system resume", "Réactiver le computer use", False),
+    ("ghost-system update", "Mettre à jour les paquets du système", True),
+    ("ghost-system agent-screen status", "État de l'écran dédié à l'agent", True),
+    ("ghost-model status", "État du modèle local llama.cpp", True),
     ("ghost-status", "Réseau, API joignable, mémoire, cartes branchées", True),
     ("ghost-perf", "Auditer chaque optimisation sur le système vivant", True),
     ("ghost-bench", "Mesurer boot, RAM, CPU, NVMe", True),

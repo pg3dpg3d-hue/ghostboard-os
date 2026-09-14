@@ -23,8 +23,4 @@ done
 exec "$BROWSER" \
   --window-size="$W,$H" --window-position=0,0 \
   --no-first-run --no-default-browser-check --no-service-autorun \
-  --disable-background-networking --disable-component-update \
-  --disable-features=Translate,MediaRouter,OptimizationHints \
-  --disable-breakpad --disable-crash-reporter \
-  --password-store=basic \
   "$@"

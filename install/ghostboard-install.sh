@@ -21,6 +21,12 @@
 # ============================================================================
 set -uo pipefail
 
+# L'ancien parcours configure GRUB et l'énergie Intel. Refuser sur Raspberry Pi.
+if [[ -f /proc/device-tree/model ]] && grep -aq 'Raspberry Pi' /proc/device-tree/model; then
+  echo 'Raspberry Pi détecté : utiliser sudo bash install/ghostboard-pi5.sh --profile full' >&2
+  exit 1
+fi
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$HERE/lib/common.sh"

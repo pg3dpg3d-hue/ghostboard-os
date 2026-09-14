@@ -1,5 +1,9 @@
 # GHOSTBOARD OS
 
+> **Raspberry Pi 5 development edition (0.2.0):** see [INSTALLATION-PI5-FR.md](INSTALLATION-PI5-FR.md).
+> Install on Raspberry Pi OS 64-bit / Debian 13 with `sudo bash install/ghostboard-pi5.sh --profile full`.
+> This source release adds the Pi installer, native control center, hybrid assistant and computer-use improvements. Hardware boot validation is still pending; see `VALIDATION.md`. The original Radxa edition is documented below.
+
 **CUSTOM HARDWARE. READY TO EXPLORE.**
 
 A lightweight, instant desktop for the GHOSTBOARD cyberdeck: Debian 13 + XFCE,
