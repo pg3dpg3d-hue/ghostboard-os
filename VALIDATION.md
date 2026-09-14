@@ -50,3 +50,28 @@ xvfb-run -a -s "-screen 0 800x480x24 -nolisten tcp" python3 tests/test-desktop-l
 ```
 
 Les performances du Pi n’ont pas été mesurées. La livraison comprend un installateur et une recette d’image reproductible ; l’image elle-même doit encore être construite et qualifiée sur Linux puis démarrée sur un Pi 5.
+
+## Audit Hand Control — 14 septembre 2026
+
+Corrections vérifiées sur Windows/Python 3.12 : 58 tests Hand Control, 28 tests
+Pi5, 14 régressions MCP et 30 contrôles MCP sans X11 ; disposition Tk,
+compileall et syntaxe Node passent. Aucun chiffre matériel n'a été mesuré.
+
+Le bilan initial surestimait plusieurs fonctions. La calibration lit désormais
+12 échantillons réels par coin, exige au moins 6 détections fiables et refuse
+les mouvements excessifs ; elle reste à essayer avec une caméra physique.
+Le benchmark n'injecte plus d'événements et ne modifie plus l'état du service.
+Les commandes de reprise ne sont plus rejouées, les erreurs caméra remontent,
+la capture est cadencée et la dernière image est libérée à l'arrêt.
+
+Limites encore ouvertes : le backend MediaPipe utilise toujours l'API historique
+`solutions.hands`, pas Tasks Hand Landmarker. La disponibilité Debian 13 ARM64
+et la recette de dépendances ne sont pas validées. Spatial dispose d'un émetteur
+UDP, pas d'un récepteur intégré vérifié. Le masquage du pointeur Presentation
+est un événement, pas une implémentation X11. Les FPS caméra et inférence sont
+encore calculés depuis les mêmes observations ; ils ne constituent pas deux
+mesures indépendantes. STOP est contrôlé avant chaque commande, mais aucune
+borne de latence d'arrêt n'est garantie pendant un appel natif bloquant.
+Un clic générique ne sait pas distinguer une validation sensible : la garantie
+absolue annoncée précédemment n'est pas implémentée. Ne pas utiliser ce module
+pour confirmer des achats, suppressions, messages ou changements de sécurité.

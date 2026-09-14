@@ -372,7 +372,7 @@ class OutputSafetyTests(unittest.TestCase):
              patch.object(h.subprocess, 'run', side_effect=lambda argv, *a, **k: calls.append(argv) or type('R', (), {'returncode': 0})()):
             sink = h.XdotoolActionSink(display=':0')
             sink.move(10.7, 20.2)
-        self.assertEqual(calls[0], ['xdotool', 'mousemove', '--sync', '10', '20'])
+        self.assertEqual(calls[0], ['xdotool', 'mousemove', '10', '20'])
 
     def test_unknown_button_rejected(self):
         with patch.object(h.shutil, 'which', return_value='/usr/bin/xdotool'), \
@@ -492,6 +492,81 @@ def _with(**overrides):
     cfg = h.load_config('none')
     cfg.update(overrides)
     return h.validate_config(cfg)
+
+
+class HardeningTests(unittest.TestCase):
+    def test_resume_command_is_not_replayed_after_stop(self):
+        eng = engine(state=h.S_PAUSED)
+        command = {'desired': 'active', 'ts': 1}
+        h.apply_control(eng, command)
+        eng._release_and(h.S_STOPPED)
+        h.apply_control(eng, command)
+        self.assertEqual(eng.state, h.S_STOPPED)
+        h.apply_control(eng, {'desired': 'active', 'ts': 2})
+        self.assertEqual(eng.state, h.S_ARMED)
+
+    def test_nonfinite_samples_rejected(self):
+        for value in (float('nan'), float('inf')):
+            points = [(0.5, 0.5, 0)] * 21
+            points[8] = (value, 0.5, 0)
+            with self.assertRaises(ValueError):
+                h.HandSample(points)
+            with self.assertRaises(ValueError):
+                h.pointing_hand(confidence=value)
+
+    def test_fractional_frame_configuration_rejected(self):
+        cfg = h.load_config('missing')
+        cfg['analysis_width'] = 640.5
+        with self.assertRaises(ValueError):
+            h.validate_config(cfg)
+
+    def test_hand_loss_restarts_arming_hold(self):
+        eng = engine(state=h.S_ARMED)
+        feed(eng, [h.pointing_hand()] * 10)
+        eng.process_sample(None, 0.6)
+        eng.process_sample(h.pointing_hand(), 1.0)
+        self.assertEqual(eng.state, h.S_ARMED)
+
+    def test_disabled_status_is_not_running(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'state'
+            h.write_state({'state': h.S_DISABLED, 'running': False}, path)
+            self.assertFalse(h.read_state(path)['running'])
+
+    def test_observation_never_creates_desktop_output_or_writes_state(self):
+        cfg = h.load_config('missing')
+        camera = h.SimulatedCamera([h.pointing_hand()] * 3)
+        with patch.object(h, 'XdotoolActionSink', side_effect=AssertionError('desktop')), \
+             patch.object(h, 'write_state', side_effect=AssertionError('state')), \
+             patch.object(h, '_query_screen_size', return_value=(800, 480)):
+            h.run_engine(cfg, camera, h.SimulatedBackend(), observe_only=True)
+
+    def test_camera_exception_propagates_and_buffer_clears(self):
+        from unittest.mock import Mock
+        source = Mock()
+        source.read.side_effect = RuntimeError('disconnected')
+        camera = h.ThreadedCamera(source)
+        camera.start()
+        camera._thread.join(1)
+        with self.assertRaisesRegex(RuntimeError, 'disconnected'):
+            camera.read_latest()
+        camera._buf.put(object())
+        camera.stop()
+        self.assertIsNone(camera._buf.get()[0])
+        source.stop.assert_called_once()
+
+    def test_calibration_uses_measured_landmarks_and_closes_resources(self):
+        from unittest.mock import Mock
+        camera, backend = Mock(), Mock()
+        backend.detect.return_value = [h.pointing_hand(0.32, 0.41)]
+        with patch.object(h, 'make_camera', return_value=camera), \
+             patch.object(h, 'make_backend', return_value=backend), \
+             patch.object(h.time, 'sleep'):
+            point = h.measure_calibration_point(h.load_config('missing'))
+        self.assertAlmostEqual(point[0], 0.32)
+        self.assertAlmostEqual(point[1], 0.41)
+        camera.stop.assert_called_once()
+        backend.close.assert_called_once()
 
 
 if __name__ == '__main__':

@@ -388,3 +388,14 @@ La télémétrie batterie n'apparaît que si le matériel l'expose au noyau. Une
 
 Base : `pg3dpg3d-hue/ghostboard-os`, commit `f9daf5527ce077ef83f0f6146daaf33159f79702`.
 Les 157 fichiers de départ ont été récupérés via GitHub et vérifiés par leur empreinte Git. Les modifications de cette livraison sont locales et accompagnées d'un patch. Elles n'ont pas été publiées sur le dépôt distant.
+
+### Correctifs de robustesse Hand Control
+
+La calibration mesure maintenant la position réelle de l'index à chaque appui
+sur Espace : maintenir le doigt immobile pendant les 12 lectures. Une détection
+insuffisante ou instable est refusée. Échap annule sans enregistrer les coins
+partiels. Le backend simulé ne peut pas calibrer une caméra réelle.
+Le benchmark fonctionne sans injection et préserve l'état du service.
+Consulter la section « Audit Hand Control » de VALIDATION.md : les anciennes
+annonces de prise en charge ne valent pas validation matérielle ou intégration
+complète de Spatial, Presentation et MediaPipe Tasks.

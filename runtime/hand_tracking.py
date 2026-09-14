@@ -21,6 +21,7 @@ respect impératif du fichier STOP partagé de Ghostboard vivent dans l'engine.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import datetime as dt
 import json
 import math
@@ -184,6 +185,9 @@ def validate_config(config):
     """
     if not isinstance(config, dict):
         raise ValueError('Configuration must be a JSON object.')
+    missing = set(DEFAULT_CONFIG) - set(config)
+    if missing:
+        raise ValueError('Missing configuration keys: ' + ', '.join(sorted(missing)))
     unknown = set(config) - set(DEFAULT_CONFIG)
     if unknown:
         raise ValueError('Unknown configuration keys: ' + ', '.join(sorted(unknown)))
@@ -202,10 +206,14 @@ def validate_config(config):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(key + ' must be a number.')
+        if isinstance(DEFAULT_CONFIG[key], int) and not isinstance(value, int):
+            raise ValueError(key + ' must be an integer.')
         if not (low <= value <= high):
             raise ValueError(f'{key} must be within [{low}, {high}].')
     if config['pinch_off'] <= config['pinch_on']:
         raise ValueError('pinch_off must be greater than pinch_on (hysteresis).')
+    if config['spatial_channel_host'] != '127.0.0.1':
+        raise ValueError('spatial_channel_host must be 127.0.0.1.')
     calib = config['calibration']
     if not isinstance(calib, dict):
         raise ValueError('calibration must be an object.')
@@ -301,6 +309,14 @@ class HandSample:
             raise ValueError('A hand sample needs exactly 21 landmarks.')
         self.landmarks = [(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0)
                           for p in landmarks]
+        if any(not math.isfinite(v) for point in self.landmarks for v in point):
+            raise ValueError('Landmarks must be finite.')
+        if handedness not in ('Left', 'Right'):
+            raise ValueError('Unknown handedness.')
+        if not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
+            raise ValueError('Confidence must be finite and within [0, 1].')
+        if not math.isfinite(float(timestamp)):
+            raise ValueError('Timestamp must be finite.')
         self.handedness = handedness
         self.confidence = float(confidence)
         self.timestamp = float(timestamp)
@@ -719,7 +735,7 @@ class BaseActionSink:
                 self.button_up(button)
             except Exception:
                 pass
-        self.held.clear()
+        # Failed releases remain tracked so the next cleanup can retry.
 
     def close(self):
         self.release_all()
@@ -730,9 +746,9 @@ class RecordingActionSink(BaseActionSink):
 
     Aucun test ne déplace réellement le pointeur : il utilise ce sink."""
 
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, maxlen=None):
         super().__init__()
-        self.actions = []
+        self.actions = [] if maxlen is None else deque(maxlen=maxlen)
         self._fail_on = fail_on
 
     def _record(self, name, **kw):
@@ -784,12 +800,15 @@ class XdotoolActionSink(BaseActionSink):
 
     def _run(self, argv):
         # argv est TOUJOURS une liste de chaînes littérales et d'entiers formatés.
+        if argv[0] != 'mouseup' and STOP_FILE.exists():
+            self.release_all()
+            raise RuntimeError('Shared STOP is active.')
         env = {**os.environ, 'DISPLAY': self.display}
         subprocess.run(['xdotool', *[str(a) for a in argv]], env=env,
                        check=True, capture_output=True, timeout=5)
 
     def move(self, x, y):
-        self._run(['mousemove', '--sync', int(x), int(y)])
+        self._run(['mousemove', int(x), int(y)])
 
     def click(self, button='left', count=1):
         b = self.BUTTONS.get(button)
@@ -801,8 +820,8 @@ class XdotoolActionSink(BaseActionSink):
         b = self.BUTTONS.get(button)
         if b is None:
             raise ValueError('Unknown button.')
+        self.held.add(button)  # Track even if the command times out after injection.
         self._run(['mousedown', b])
-        self.held.add(button)
 
     def button_up(self, button='left'):
         b = self.BUTTONS.get(button)
@@ -860,8 +879,8 @@ class BaseEventChannel:
 class RecordingEventChannel(BaseEventChannel):
     """Canal simulé pour les tests : conserve les événements en mémoire."""
 
-    def __init__(self):
-        self.events = []
+    def __init__(self, maxlen=None):
+        self.events = [] if maxlen is None else deque(maxlen=maxlen)
 
     def emit(self, event):
         # On valide en re-sérialisant : un événement doit rester du JSON pur.
@@ -936,6 +955,8 @@ class HandControlEngine:
         except Exception:
             pass
         self.smoother.reset()
+        self.recognizer = GestureRecognizer(self.cfg)
+        self._arm_pose_since = None
         self.state = new_state
 
     def pause(self):
@@ -1023,6 +1044,7 @@ class HandControlEngine:
             self._arm_pose_since = None
 
     def _handle_hand_lost(self, sample, now):
+        self._arm_pose_since = None
         self._lost_frames += 1
         self.tracking = False
         self.confidence = sample.confidence if sample else 0.0
@@ -1194,6 +1216,8 @@ class HandControlEngine:
             except Exception:
                 pass
             self.mode = mode
+            self.recognizer = GestureRecognizer(self.cfg)
+            self._arm_pose_since = None
             self.smoother.reset()
 
     def close(self):
@@ -1520,7 +1544,9 @@ class ThreadedCamera:
     l'image la plus récente. L'inférence en retard fait abandonner les anciennes
     images ; la mémoire ne croît jamais."""
 
-    def __init__(self, source):
+    def __init__(self, source, fps=30):
+        self.fps = fps
+        self.error = None
         self._source = source
         self.name = getattr(source, 'name', 'camera')
         self._buf = LatestFrameBuffer()
@@ -1533,25 +1559,36 @@ class ThreadedCamera:
         self._thread.start()
         return self
 
-    def _loop(self):  # pragma: no cover - dépend d'une caméra réelle
-        while not self._stop.is_set():
-            try:
+    def _loop(self):
+        try:
+            while not self._stop.is_set():
+                started = time.monotonic()
                 frame = self._source.read()
-            except Exception:
+                if frame is None:
+                    raise RuntimeError('Camera stream closed.')
+                if self._stop.is_set():
+                    break
+                self._buf.put(frame)
                 frame = None
-            if frame is None:
-                time.sleep(0.005)
-                continue
-            self._buf.put(frame)
+                self._stop.wait(max(0, 1 / self.fps - (time.monotonic() - started)))
+        except Exception as exc:
+            self.error = exc
+        finally:
+            frame = None
 
     def read_latest(self):
+        if self.error:
+            raise RuntimeError('Camera capture failed: ' + str(self.error)) from self.error
         return self._buf.get()
 
     def stop(self):
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=1)
-        self._source.stop()
+        try:
+            self._source.stop()
+        finally:
+            if self._thread:
+                self._thread.join(timeout=2)
+            self._buf.get()  # Drop the last unconsumed image.
 
 
 class Picamera2Source(CameraSource):  # pragma: no cover - nécessite le matériel
@@ -1658,7 +1695,7 @@ def read_state(path=STATE_FILE):
         return {'state': 'unknown', 'running': False}
     # Le service est considéré « vivant » si l'état a été écrit récemment.
     fresh = (time.time() - path.stat().st_mtime) < 5
-    data['running'] = fresh
+    data['running'] = fresh and data.get('state') != S_DISABLED and data.get('running', True)
     return data
 
 
@@ -1688,8 +1725,11 @@ def read_control(path=CONTROL_FILE):
 
 def apply_control(engine, command):
     """Applique une requête de contrôle à un engine en marche."""
-    if not command:
+    if not isinstance(command, dict) or not command:
         return
+    if command == getattr(engine, '_last_control', None):
+        return
+    engine._last_control = dict(command)
     desired = command.get('desired')
     if desired == 'paused':
         engine.pause()
@@ -1824,7 +1864,8 @@ def cmd_doctor(as_json):
     return 0 if config_ok else 1
 
 
-def run_engine(config=None, camera=None, backend=None, duration=None, on_status=None):
+def run_engine(config=None, camera=None, backend=None, duration=None, on_status=None,
+               output=None, observe_only=False):
     """Boucle principale : capture -> détection -> gestes -> actions.
 
     File d'une seule image récente : si l'inférence prend du retard, les images
@@ -1833,24 +1874,26 @@ def run_engine(config=None, camera=None, backend=None, duration=None, on_status=
     config = config or load_config()
     validate_config(config)
     screen = _query_screen_size()
-    output = None
+    if output is None:
+        output = RecordingActionSink(maxlen=1) if observe_only else XdotoolActionSink()
     channel = None
-    try:
-        output = XdotoolActionSink()
-    except RuntimeError:
-        # Sans xdotool (ex. hors X), on n'injecte rien : sink d'enregistrement.
-        output = RecordingActionSink()
-    if config['spatial_channel_port']:
+    if config['spatial_channel_port'] and not observe_only:
         channel = LocalEventChannel(config['spatial_channel_host'], config['spatial_channel_port'])
     else:
-        channel = RecordingEventChannel()
+        channel = RecordingEventChannel(maxlen=1)
 
-    camera = camera if camera is not None else make_camera(config)
+    backend = backend if backend is not None else make_backend(config)
+    try:
+        camera = camera if camera is not None else make_camera(config)
+    except Exception:
+        backend.close()
+        output.close()
+        channel.close()
+        raise
     # File d'une seule image récente : les sources réelles passent par un thread
     # de capture qui abandonne les anciennes images. Le simulateur livre tout.
     if not hasattr(camera, 'read_latest'):
-        camera = ThreadedCamera(camera)
-    backend = backend if backend is not None else make_backend(config)
+        camera = ThreadedCamera(camera, config['target_fps'])
     engine = HandControlEngine(config, output=output, channel=channel, screen_size=screen)
     perf = engine._perf
 
@@ -1865,7 +1908,11 @@ def run_engine(config=None, camera=None, backend=None, duration=None, on_status=
             if duration is not None and (loop_start - started) >= duration:
                 break
             # Contrôle inter-processus.
-            apply_control(engine, read_control())
+            if not observe_only:
+                apply_control(engine, read_control())
+            if engine.stop_file.exists():
+                engine._release_and(S_STOPPED)
+                break
             if engine.state == S_DISABLED:
                 break  # ghost-hand stop : sortie propre (boutons relâchés dans finally)
             # Capture : image la plus récente + nombre d'images abandonnées.
@@ -1884,28 +1931,37 @@ def run_engine(config=None, camera=None, backend=None, duration=None, on_status=
                 time.sleep(interval)
                 continue
             t_inf = time.monotonic()
-            samples = backend.detect(frame, t_inf)
+            try:
+                samples = backend.detect(frame, t_inf)
+            finally:
+                frame = None
             inference_s = time.monotonic() - t_inf
             sample = samples[0] if samples else None
             now = time.monotonic()
-            engine.process_sample(sample, now)
+            if not observe_only:
+                engine.process_sample(sample, now)
             perf.record(capture_s, inference_s, now - loop_start, now)
             # État partagé (throttle) + réduction automatique si surcharge.
-            if now - last_state_write > 0.5:
+            if not observe_only and now - last_state_write > 0.5:
                 status = engine.status()
                 write_state(status)
                 if on_status:
                     on_status(status)
                 last_state_write = now
             _adaptive_pace(perf, config)
+            if isinstance(camera, ThreadedCamera):
+                camera.fps = config['target_fps']
             elapsed = time.monotonic() - loop_start
             if elapsed < interval:
                 time.sleep(interval - elapsed)
     finally:
-        engine.close()
-        camera.stop()
-        backend.close()
-        write_state({**engine.status(), 'state': S_DISABLED, 'running': False})
+        with ExitStack() as cleanup:
+            cleanup.callback(backend.close)
+            cleanup.callback(camera.stop)
+            cleanup.callback(engine.close)
+            frame = None
+        if not observe_only:
+            write_state({**engine.status(), 'state': S_STOPPED if engine.state == S_STOPPED else S_DISABLED, 'running': False})
     return perf
 
 
@@ -1941,7 +1997,7 @@ def cmd_benchmark(seconds):
         backend = SimulatedBackend()
         real_camera = False
 
-    engine_perf = run_engine(config=config, camera=camera, backend=backend, duration=seconds)
+    engine_perf = run_engine(config=config, camera=camera, backend=backend, duration=seconds, observe_only=True)
     report = engine_perf.report()
     report.update({
         'seconds_requested': seconds,
@@ -2098,6 +2154,42 @@ def calibrate(interactive=True):
         return _calibrate_terminal(config)
 
 
+def measure_calibration_point(config):
+    """Capture actual landmarks only; never inject input or retain an image."""
+    if STOP_FILE.exists():
+        raise RuntimeError('Shared STOP is active.')
+    with ExitStack() as cleanup:
+        backend = make_backend(config)
+        cleanup.callback(backend.close)
+        if isinstance(backend, SimulatedBackend):
+            raise RuntimeError('Calibration requires a real tracking backend.')
+        camera = make_camera(config)
+        cleanup.callback(camera.stop)
+        camera.start()
+        points = []
+        for _ in range(12):
+            if STOP_FILE.exists():
+                raise RuntimeError('Shared STOP is active.')
+            frame = camera.read()
+            try:
+                if frame is None:
+                    raise RuntimeError('Camera stream closed.')
+                samples = backend.detect(frame, time.monotonic())
+            finally:
+                frame = None
+            if samples and samples[0].confidence >= config['confidence_threshold']:
+                points.append(samples[0].index_tip[:2])
+            time.sleep(1 / config['target_fps'])
+        if len(points) < 6:
+            raise RuntimeError('Keep the index visible and steady; insufficient valid samples.')
+        result = [_percentile([p[i] for p in points], 50) for i in (0, 1)]
+        if any(not 0 <= v <= 1 for v in result):
+            raise ValueError('Index is outside the camera image.')
+        if max(math.dist(p, result) for p in points) > 0.06:
+            raise ValueError('Hand moved too much; retry the corner.')
+        return result
+
+
 def _calibrate_terminal(config):
     print('Reach each corner of the usable camera area and press Enter.')
     corners = ['top_left', 'top_right', 'bottom_right', 'bottom_left']
@@ -2105,7 +2197,7 @@ def _calibrate_terminal(config):
     for corner in corners:
         input('  Move your index to the ' + corner.replace('_', ' ') + ' corner, then press Enter...')
         # Sans caméra en direct on garde la valeur par défaut du coin.
-        result[corner] = config['calibration'][corner]
+        result[corner] = measure_calibration_point(config)
     config['calibration'].update(result)
     config['calibration']['enabled'] = True
     save_config(config)
@@ -2139,7 +2231,11 @@ def _calibrate_gui(config):  # pragma: no cover - nécessite Tk et une caméra
     def capture(_):
         name = corners[state['i']][0]
         # Sur matériel réel : lire une image et détecter le bout de l'index.
-        captured[name] = config['calibration'][name]
+        try:
+            captured[name] = measure_calibration_point(config)
+        except (RuntimeError, ValueError, OSError) as exc:
+            label.config(text=str(exc) + '\nPress Space to retry or Escape to cancel.')
+            return
         state['i'] += 1
         show()
 
@@ -2147,6 +2243,9 @@ def _calibrate_gui(config):  # pragma: no cover - nécessite Tk et une caméra
     root.bind('<Escape>', lambda _: root.destroy())
     show()
     root.mainloop()
+    if len(captured) != 4:
+        print('Calibration cancelled; configuration unchanged.')
+        return 1
     print('Calibration saved.')
     return 0
 
