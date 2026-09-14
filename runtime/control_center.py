@@ -45,7 +45,7 @@ class Center(tk.Tk):
         actions.pack(fill='x', pady=12)
         for text, action in [('Diagnostics', lambda: self.open('diagnostics')), ('Updates', lambda: self.open('updates')), ('Backup', self.backup), ('Restore', self.restore), ('Resume agent', self.resume)]:
             ttk.Button(actions, text=text, command=action).pack(side='left', padx=3)
-        self.add_grid(book, 'Applications', ['browser', 'files', 'terminal', 'editor', 'office', 'media', 'calculator', 'passwords', 'screenshots', 'processes', 'serial'])
+        self.add_grid(book, 'Applications', ['browser', 'files', 'terminal', 'editor', 'office', 'media', 'spatial', 'calculator', 'passwords', 'screenshots', 'processes', 'serial'])
         self.add_grid(book, 'Settings', ['wifi', 'bluetooth', 'audio', 'display', 'power', 'settings', 'hardware', 'remote'])
         self.add_grid(book, 'Assistant', ['assistant', 'local-ai', 'local-vision', 'codex', 'claude', 'ai-setup', 'voice', 'agent-browser', 'agent-assistant'])
         self.note = tk.StringVar(value='Ctrl+Alt+Escape stops computer use · No cloud connection until you start an assistant.')

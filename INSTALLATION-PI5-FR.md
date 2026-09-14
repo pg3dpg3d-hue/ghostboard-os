@@ -1,4 +1,4 @@
-# GHOSTBOARD Pi 5 — 0.3.0, version de développement
+# GHOSTBOARD Pi 5 — 0.4.0, version de développement
 
 Cette livraison ajoute au projet une édition Raspberry Pi 5 installable **sur Raspberry Pi OS 64 bits basé sur Debian 13**. Elle comprend les sources complètes et un installateur. Une carte microSD ou un SSD contenant déjà Raspberry Pi OS est nécessaire. Aucune image disque préinstallée n'est fournie.
 
@@ -11,7 +11,7 @@ Le démarrage réel, l'affichage HDMI/DSI, l'audio, le Bluetooth et les performa
 3. Copier l'archive fournie sur le Pi et l'extraire :
 
 ```bash
-tar -xzf GHOSTBOARD-Pi5-0.3.0.tar.gz
+tar -xzf GHOSTBOARD-Pi5-0.4.0.tar.gz
 cd ghostboard-os
 bash install/ghostboard-pi5.sh --dry-run
 sudo bash install/ghostboard-pi5.sh --profile full --user "$USER"
@@ -48,6 +48,7 @@ Utiliser **cet installateur Pi 5**. L'ancien `install/ghostboard-install.sh` res
 | Centre de contrôle | Applications, réglages, diagnostics et assistant ; interface native redimensionnable |
 | Réseau et périphériques | Interfaces Wi-Fi, Bluetooth, audio PipeWire, affichage et énergie |
 | Applications | Chromium, fichiers, éditeur, calculatrice, capture d'écran, gestionnaire de processus |
+| Spatial 3D | Inspection locale GLB/GLTF/STL/OBJ/PLY, mesures, annotations, coupe, éclaté et rapports JSON |
 | Profil complet | LibreOffice, VLC, PDF, KeePassXC, archives, outils de développement et FFmpeg |
 | Computer use | Capture, clic, frappe, raccourcis, défilement, liste/activation des fenêtres, glisser-déposer |
 | Contrôle utilisateur | Bouton STOP et Ctrl+Alt+Échap ; reprise explicite ; verrouillage du bureau |
@@ -64,6 +65,22 @@ Utiliser **cet installateur Pi 5**. L'ancien `install/ghostboard-install.sh` res
 | Compagnon | Console série et sources du firmware existant, conservées sans modification fonctionnelle |
 
 Les logiciels tiers ne sont pas embarqués dans l'archive : leurs paquets sont installés depuis les dépôts configurés sur le Pi. IBM Plex est installé si disponible ; sinon le système utilise une police de repli. Martian Mono n'est pas téléchargée automatiquement dans cette édition.
+
+## GHOSTBOARD Spatial — atelier 3D local
+
+Spatial transforme le cyberdeck en poste d'inspection 3D portable. Il fonctionne dans Chromium avec Three.js épinglé à la version `0.186.0`, servi uniquement sur `127.0.0.1`. Les modèles restent sur le Pi : l'application utilise l'API de fichiers du navigateur et n'envoie aucune géométrie sur Internet.
+
+```bash
+ghost-spatial
+```
+
+Ouvrir ou déposer un fichier GLB, GLTF autonome, STL, OBJ ou PLY. GLB est recommandé pour les assemblages avec matériaux, textures et hiérarchie ; un fichier GLTF doit contenir ses données intégrées. La limite par fichier est de 250 Mio. Le cube `spatial/samples/calibration-cube.stl` permet de vérifier immédiatement l'échelle et le rendu.
+
+L'atelier fournit une sélection précise par lancer de rayon, l'arbre de l'assemblage, le nombre de triangles, les dimensions et le centre de chaque pièce. Les vues perspective, haut, face, droite et orthographique servent à l'inspection technique. Deux clics créent une mesure 3D ; un clic peut aussi poser une annotation liée à un point de la géométrie. La vue éclatée révèle les pièces d'un assemblage, tandis que la coupe verticale, le mode rayons X et le maillage filaire aident à voir les volumes internes. Le rendu est déclenché à la demande et sa résolution interne est plafonnée pour préserver batterie, mémoire et température sur le Pi 5.
+
+Le bouton **Rapport** exporte un JSON contenant les fichiers chargés, limites 3D, statistiques, mesures, annotations, caméra et modes d'analyse. Ce rapport donne à Codex ou Claude une description structurée à lire dans `~/Ghostboard`; les agents peuvent aussi lancer Spatial et l'inspecter avec le serveur MCP de computer use. **Capture** produit un PNG partageable. Le choix `mm`, `cm` ou `m` indique l'unité du modèle source : Spatial ne devine pas l'échelle d'un STL ou OBJ.
+
+La version actuelle vise l'inspection, le diagnostic d'assemblages, la préparation d'impression 3D et les revues à distance. Elle ne modifie pas les solides comme un logiciel de CAO paramétrique. Les performances des gros modèles et l'accélération graphique doivent être qualifiées sur le Pi 5 final ; commencer sous 500 000 triangles, puis augmenter selon la mémoire et la température observées.
 
 ## Assistant distant et computer use
 

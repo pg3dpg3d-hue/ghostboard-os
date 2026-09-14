@@ -73,6 +73,7 @@ GHOST_COMMANDS = [
     ("ghost-session-mode status", "Mode d'ouverture de session", True),
     ("ghost-claude", "Lancer Claude Code", True),
     ("ghost-codex", "Lancer Codex dans le dépôt de développement", True),
+    ("ghost-spatial", "Inspecter, mesurer et annoter des modèles 3D", True),
     ("ghost-llm", "LLM local — chat avec Dolphin (LM Studio)", True),
     ("ghost-llm --check", "LLM local : endpoint joignable ? modèle chargé ?", True),
     ("ghost-claude --local", "Claude Code sur le modèle LOCAL (via proxy)", True),

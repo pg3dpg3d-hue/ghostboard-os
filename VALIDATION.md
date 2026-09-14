@@ -1,4 +1,4 @@
-# Validation — GHOSTBOARD Pi 5 0.3.0
+# Validation — GHOSTBOARD Pi 5 0.4.0
 
 Validation locale : Windows, Python 3.12, Node.js. Aucun Pi 5, serveur X11 Linux ou moteur IA distant disponible dans cette session.
 
@@ -10,13 +10,16 @@ Validation locale : Windows, Python 3.12, Node.js. Aucun Pi 5, serveur X11 Linux
 | Native control center layout | PASS |
 | Python compilation | PASS |
 | MCP JavaScript syntax | PASS |
+| Spatial JavaScript syntax | PASS |
 | Theme legibility and consistency | PASS |
 | Theme generation | PASS |
 | Pi installer dry run | PASS |
 | Shell syntax (29 scripts) | PASS |
 | XFCE XML configuration | PASS |
 
-Les tests Python utilisent de vrais fichiers temporaires, un serveur HTTP local de test et le transport MCP réel. Ils vérifient aussi la recette d’image, les profils de ventilation réversibles, la vision locale, le refus d’une commande vocale et les configurations MCP distantes de Codex et Claude. Le test MCP réel crée un dépôt temporaire, y lit et écrit des fichiers, exécute une commande Node, refuse une sortie de dossier et vérifie que le STOP bloque une écriture distante. Les tests de régression MCP simulent uniquement les processus X11. Les widgets du centre de contrôle ont été créés sur Windows aux dimensions 760 × 430 et 800 × 480.
+Les tests Python utilisent de vrais fichiers temporaires, un serveur HTTP local de test et le transport MCP réel. Ils vérifient aussi la recette d’image, les profils de ventilation réversibles, la vision locale, le refus d’une commande vocale, les configurations MCP distantes de Codex et Claude, ainsi que le confinement des fichiers servis par Spatial. Le test MCP réel crée un dépôt temporaire, y lit et écrit des fichiers, exécute une commande Node, refuse une sortie de dossier et vérifie que le STOP bloque une écriture distante. Les tests de régression MCP simulent uniquement les processus X11. Les widgets du centre de contrôle ont été créés sur Windows aux dimensions 760 × 430 et 800 × 480.
+
+GHOSTBOARD Spatial a été ouvert dans un vrai Chromium local avec Three.js 0.186.0. Le cube STL de calibration a été rendu et reconnu à 20 × 20 × 20 mm et 12 triangles. La syntaxe JavaScript, le verrou de dépendances et les routes locales protégées font partie de la validation reproductible.
 
 La génération du thème a produit les ressources GTK, XFWM, rofi, palette et boutons PNG. Le convertisseur SVG → PNG n’est pas présent sur l’hôte Windows ; il figure dans les paquets de l’installateur Linux.
 
@@ -31,9 +34,10 @@ La génération du thème a produit les ressources GTK, XFWM, rofi, palette et b
 - Capture caméra, lecture PDF et inférence multimodale réelle par llama.cpp.
 - Enregistrement ALSA et transcription réelle par whisper.cpp.
 - Contrôle réel d’une application X11, session Xvfb séparée et verrouillage du bureau.
+- Accélération GPU de Spatial, modèles 3D volumineux et gestes tactiles sur la dalle finale.
 - Appels à un fournisseur IA réel, stockage dans le trousseau Linux et inférence locale sur Pi.
 
-Le workflow `.github/workflows/pi5-validation.yml` a réussi sur la branche publiée. Il prépare un conteneur Debian 13 avec Xvfb et inclut une saisie réellement reçue par xterm, une capture PNG, les outils de dépôt distant et la résolution des paquets. Cette CI vérifie le logiciel x86_64, pas le matériel ARM64.
+Le workflow `.github/workflows/pi5-validation.yml` prépare un conteneur Debian 13 avec Xvfb et inclut une saisie réellement reçue par xterm, une capture PNG, les outils de dépôt distant, Three.js épinglé et la résolution des paquets. Cette CI vérifie le logiciel x86_64, pas le matériel ARM64.
 
 Pour valider X11 sur Linux :
 

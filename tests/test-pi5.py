@@ -22,6 +22,7 @@ import assistant
 import hardware
 import model
 import remote
+import spatial
 import voice
 spec = importlib.util.spec_from_file_location('pi5', ROOT / 'install/pi5.py')
 pi5 = importlib.util.module_from_spec(spec)
@@ -128,6 +129,32 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(list(Path(folder).iterdir()), [])
             self.assertEqual(json.loads(result.stdout)['profile'], 'full')
+
+
+class SpatialTests(unittest.TestCase):
+    def test_static_routes_are_confined_to_the_application(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app, vendor = root / 'app', root / 'vendor'
+            (app / 'assets').mkdir(parents=True)
+            (vendor / 'build').mkdir(parents=True)
+            (app / 'index.html').write_text('spatial')
+            (app / 'assets/app.js').write_text('export {}')
+            (vendor / 'build/three.module.js').write_text('export {}')
+            self.assertEqual(spatial.resolve_request('/', app.resolve(), vendor.resolve()), app / 'index.html')
+            self.assertEqual(spatial.resolve_request('/app/assets/app.js', app.resolve(), vendor.resolve()), app / 'assets/app.js')
+            self.assertEqual(spatial.resolve_request('/vendor/build/three.module.js', app.resolve(), vendor.resolve()), vendor / 'build/three.module.js')
+            for path in ('/app/%2e%2e/outside', '/vendor/../../outside', '/unknown'):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    spatial.resolve_request(path, app.resolve(), vendor.resolve())
+
+    def test_workbench_has_real_inspection_features_and_pinned_runtime(self):
+        source = (ROOT / 'spatial/app.js').read_text()
+        package = json.loads((ROOT / 'spatial/package.json').read_text())
+        for marker in ('GLTFLoader', 'STLLoader', 'measurement', 'explodeVector', 'clipPlane', 'annotations', 'report'):
+            self.assertIn(marker, source)
+        self.assertEqual(package['dependencies']['three'], '0.186.0')
+        self.assertTrue((ROOT / 'spatial/samples/calibration-cube.stl').is_file())
 
 
 class HardwareTests(unittest.TestCase):
