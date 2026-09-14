@@ -51,6 +51,7 @@ Utiliser **cet installateur Pi 5**. L'ancien `install/ghostboard-install.sh` res
 | Spatial 3D | Inspection locale GLB/GLTF/STL/OBJ/PLY, mesures, annotations, coupe, éclaté et rapports JSON |
 | Profil complet | LibreOffice, VLC, PDF, KeePassXC, archives, outils de développement et FFmpeg |
 | Computer use | Capture, clic, frappe, raccourcis, défilement, liste/activation des fenêtres, glisser-déposer |
+| Contrôle gestuel | Suivi des mains local (Camera Module 3 / V4L2), 3 modes, machine d'état sûre ; désactivé par défaut |
 | Contrôle utilisateur | Bouton STOP et Ctrl+Alt+Échap ; reprise explicite ; verrouillage du bureau |
 | Assistant hybride | Client configurable local/distant compatible chat-completions, avec boucle d'outils MCP |
 | Clés API | Variable d'environnement ou trousseau du bureau ; aucune clé dans la configuration JSON |
@@ -157,6 +158,131 @@ ghost-voice --mode act --provider cloud --seconds 8
 ```
 
 Le microphone est enregistré localement avec ALSA. La transcription est affichée et doit être confirmée avant d'être envoyée au modèle choisi. Les fichiers audio et texte temporaires sont supprimés à la fin. `--speak` utilise la voix hors ligne d'`espeak-ng` pour accuser réception.
+
+## GHOSTBOARD Hand Control — contrôle gestuel local
+
+Le suivi des mains permet de piloter le bureau avec une caméra. **Tout le
+traitement reste sur le Pi** : aucune image n'est envoyée sur Internet, écrite
+sur disque, ni conservée après traitement. Seuls des points normalisés, des
+gestes et des événements en sortent. Le module est **désactivé par défaut** et
+s'installe **sans caméra branchée** ; son absence ne casse ni l'installation ni
+le démarrage de Ghostboard.
+
+### Matériel
+
+- **Caméra recommandée : Raspberry Pi Camera Module 3 (version Wide).** Le champ
+  large laisse la main dans le cadre à courte distance devant un écran 800 × 480.
+- **Branchez la nappe CSI AVANT de poser l'Active Cooler.** Le connecteur CSI du
+  Pi 5 est en partie masqué par le ventilateur : relever le clip, insérer la
+  nappe (contacts vers le bon côté), verrouiller, puis seulement clipser
+  l'Active Cooler. Retirer le cooler pour rebrancher une nappe est pénible.
+- Une **caméra USB V4L2** fonctionne aussi via le repli OpenCV (`/dev/video0`).
+
+Sur Raspberry Pi OS, Picamera2/libcamera est prioritaire (souvent préinstallé).
+Le repli USB utilise `python3-opencv`, installé par le profil complet. Le flux
+d'analyse est réduit à **640 × 480** quelle que soit la résolution du capteur, et
+une seule main est suivie au départ pour limiter la latence.
+
+### MediaPipe (moteur de détection)
+
+MediaPipe Hand Landmarker est le premier moteur. **Aucune roue apt épinglée
+fiable n'existe pour Debian 13 ARM64** ; il n'est donc pas installé globalement.
+Parcours reproductible, dans un environnement dédié :
+
+```bash
+python3 -m venv ~/.local/share/ghostboard/hand-venv
+~/.local/share/ghostboard/hand-venv/bin/pip install --upgrade pip
+~/.local/share/ghostboard/hand-venv/bin/pip install mediapipe opencv-python
+# Lancer le moteur avec ce Python :
+~/.local/share/ghostboard/hand-venv/bin/python /usr/local/bin/ghost-hand start
+```
+
+Si MediaPipe est indisponible, `ghost-hand doctor` le signale clairement et le
+module bascule sur le backend **simulé** (utile pour les tests) sans masquer
+l'échec. **L'accélération Hailo n'est pas prise en charge** tant qu'un modèle
+compatible n'a pas été réellement intégré et testé sur le matériel.
+
+### Utilisation
+
+```bash
+ghost-hand start            # arme ; MAINTENIR le pointage pour activer
+ghost-hand mode pointer     # pointer | spatial | presentation
+ghost-hand status --json
+ghost-hand calibrate        # calibration guidée des 4 coins (interface 800 × 480)
+ghost-hand pause            # ou paume ouverte
+ghost-hand resume
+ghost-hand stop             # relâche tout bouton de souris maintenu
+ghost-hand doctor
+ghost-hand benchmark --seconds 30
+```
+
+Le mode et l'état sont aussi visibles et modifiables depuis l'onglet **Hand
+control** du centre de contrôle, avec un indicateur permanent lorsque la caméra
+fonctionne, les FPS mesurés et la confiance de détection.
+
+**Gestes (mode Pointer)** : index = déplacement ; pincement pouce-index = clic
+gauche ; pincement pouce-majeur = clic droit ; double pincement = double-clic ;
+pincement maintenu = glisser-déposer ; deux doigts = défilement ; paume ouverte
+= pause immédiate ; balayage horizontal = changement de bureau.
+**Presentation** : balayage = diapositive suivante/précédente, index = pointeur,
+paume = masquer/afficher le pointeur. **Spatial** : voir ci-dessous.
+
+### Sécurité et arrêt
+
+Une machine d'état (`DISABLED`, `ARMED`, `ACTIVE`, `PAUSED`, `STOPPED`) encadre
+chaque geste. L'activation est toujours **locale et explicite**, et le geste
+d'armement doit être **maintenu** avant que le moindre mouvement n'agisse. Le
+module respecte le **fichier STOP** commun : `ghost-system stop` ou
+**Ctrl+Alt+Échap** arrête immédiatement l'injection, relâche tous les boutons
+maintenus et passe en `STOPPED`. La reprise exige `ghost-system resume` **et** une
+nouvelle activation locale. Une perte de la main, une fermeture de caméra ou une
+exception relâche aussi les boutons. Les gestes ne valident jamais seuls une
+opération sensible (achat, suppression, envoi, saisie d'identifiants).
+
+### Service systemd (optionnel, désactivé par défaut)
+
+L'installateur dépose un service utilisateur `ghostboard-hand.service` **non
+activé**. Pour le lancer au besoin, ou l'activer pour les sessions suivantes :
+
+```bash
+systemctl --user start ghostboard-hand.service     # ponctuel (= ghost-hand start)
+systemctl --user enable ghostboard-hand.service    # au démarrage de la session
+systemctl --user disable ghostboard-hand.service
+```
+
+### GHOSTBOARD Spatial et Point & Command
+
+En mode `spatial`, le contrôle gestuel n'injecte rien dans le bureau : il émet des
+**messages JSON validés sur un canal local strictement limité à `127.0.0.1`**
+(UDP, activé par `spatial_channel_port` dans la configuration). C'est aussi
+l'interface **Point & Command** : chaque événement contient horodatage monotone,
+coordonnées normalisées et écran, main gauche/droite, geste, confiance et mode —
+**jamais d'image**. Elle prépare la combinaison future d'un point de la main et
+d'une commande vocale.
+
+Un agent distant peut lire l'état via l'outil MCP **`hand_status`** (lecture
+seule). Aucun outil MCP ne permet d'activer la caméra ni le contrôle gestuel :
+cela reste une action locale. Une capture explicite de la zone pointée par un
+agent (Codex/Claude) passerait par les outils de computer use existants
+(`screenshot` avec `region`), sur demande explicite — non par ce module.
+
+### Configuration
+
+Tous les paramètres vivent dans `~/.config/ghostboard/hand-tracking.json`
+(lissage One Euro, zone morte, seuil de confiance, hystérésis du pincement, durée
+de validation, temporisation entre gestes, limite de vitesse du pointeur,
+inversion horizontale, calibration…) et se modifient **sans changer le code**.
+`ghost-hand calibrate` enregistre la zone utile de façon atomique.
+
+### Limites
+
+La lumière, l'occlusion des doigts et la qualité de la caméra bornent ce que tout
+suivi visuel peut faire. **Tests matériels restant à réaliser sur un vrai Pi 5** :
+capture Picamera2/V4L2 réelle, latence et FPS avec MediaPipe sur ARM64, injection
+xdotool sur la dalle, comportement du service systemd utilisateur en session
+graphique, et calibration en direct. Les chiffres de `ghost-hand benchmark` sont
+des mesures réelles du pipeline configuré ; hors Pi/caméra ils mesurent le
+pipeline **simulé** et le rapport l'indique.
 
 ## Contrôle par Internet, Codex et Claude
 

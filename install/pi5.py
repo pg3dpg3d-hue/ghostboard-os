@@ -26,13 +26,18 @@ xdg-utils desktop-file-utils gvfs gvfs-backends udisks2 upower
 rofi wmctrl scrot xdotool xvfb xauth chromium mousepad galculator
 papirus-icon-theme adwaita-icon-theme fonts-dejavu-core fontconfig librsvg2-bin
 librsvg2-common unzip zip file rsync htop openssh-client cryptsetup'''.split()
+# python3-opencv fournit le repli caméra V4L2 (USB) du suivi des mains. Picamera2
+# (Camera Module 3) est fourni par Raspberry Pi OS ; MediaPipe s'installe dans un
+# venv dédié (voir INSTALLATION-PI5-FR.md), car aucune roue apt épinglée fiable
+# n'existe pour Debian 13 ARM64.
 FULL = '''build-essential cmake pkg-config libcurl4-openssl-dev gdb tmux ripgrep jq sqlite3
 python3-pip python3-dev python3-gpiozero i2c-tools usbutils pciutils v4l-utils poppler-utils
+python3-opencv
 libreoffice-writer libreoffice-calc libreoffice-impress evince vlc
 keepassxc engrampa gnome-disk-utility ffmpeg'''.split()
 TOOLS = ['ghost-system', 'ghost-assistant', 'ghost-control-center', 'ghost-model', 'ghost-hardware', 'ghost-voice', 'ghost-remote', 'ghost-workspace', 'ghost-codex', 'ghost-spatial', 'ghost-browser',
          'ghost-bruce', 'ghost-run', 'ghost-llm', 'ghost-llm-proxy', 'ghost-claude',
-         'ghost-bench', 'ghost-status', 'ghost-theme', 'ghost-vault']
+         'ghost-bench', 'ghost-status', 'ghost-theme', 'ghost-vault', 'ghost-hand']
 
 
 def plan(profile):
@@ -41,7 +46,7 @@ def plan(profile):
         'profile': profile, 'packages': BASE + (FULL if profile == 'full' else []),
         'session': 'XFCE/X11 with LightDM',
         'preserved': ['Pi boot firmware', 'config.txt', 'cmdline.txt', 'kernel', 'native display mode', 'Bluetooth', 'accessibility', 'audio'],
-        'installed': ['control center', 'hybrid, visual and voice assistant', 'local 3D spatial workbench', 'computer-use MCP', 'Pi 5 telemetry and fan profiles', 'paired remote development', 'settings backup/restore', 'diagnostics', 'application launchers'],
+        'installed': ['control center', 'hybrid, visual and voice assistant', 'local 3D spatial workbench', 'computer-use MCP', 'local hand-tracking control (disabled by default)', 'Pi 5 telemetry and fan profiles', 'paired remote development', 'settings backup/restore', 'diagnostics', 'application launchers'],
         'optional': ['Claude Code (--claude)', 'Codex CLI (--codex)', 'BlackBerry Q20 key mapping (--q20)'],
     }
 
@@ -167,6 +172,7 @@ class Installer:
             ('ghost-system-doctor', 'GHOSTBOARD Diagnostics', 'xfce4-terminal --hold --execute ghost-system doctor', False),
             ('ghost-local-ai', 'GHOSTBOARD Local AI', 'xfce4-terminal --hold --execute ghost-assistant chat --provider local', False),
             ('ghost-spatial', 'GHOSTBOARD Spatial', 'ghost-spatial', False),
+            ('ghost-hand', 'GHOSTBOARD Hand Control', 'xfce4-terminal --hold --execute ghost-hand start', False),
         ]:
             self.put('/usr/share/applications/' + name + '.desktop', desktop(label, cmd, terminal))
         self.put('/usr/local/bin/ghostboard-pi5-session', '#!/bin/sh\nexport XDG_CURRENT_DESKTOP=XFCE\nexport XDG_SESSION_TYPE=x11\nexec startxfce4\n', 0o755)
@@ -190,6 +196,21 @@ ExecStart=/usr/bin/xvfb-run -n 91 -f %t/ghostboard-agent.Xauthority -s "-screen 
 Restart=on-failure
 [Install]
 WantedBy=default.target
+''', user=True)
+        # Suivi des mains : service utilisateur DÉSACTIVÉ par défaut. Il n'est ni
+        # activé ni démarré ici ; l'utilisateur l'active explicitement depuis le
+        # centre de contrôle ou « ghost-hand start ». Le contrôle gestuel reste
+        # donc inactif après installation.
+        self.put(self.home / '.config/systemd/user/ghostboard-hand.service', '''[Unit]
+Description=GHOSTBOARD Hand Control (gesture tracking; disabled by default, local only)
+After=graphical-session.target
+PartOf=graphical-session.target
+[Service]
+Environment=DISPLAY=:0
+ExecStart=/usr/local/bin/ghost-hand run
+Restart=on-failure
+[Install]
+WantedBy=graphical-session.target
 ''', user=True)
         if q20:
             self.put(self.home / '.config/autostart/ghost-q20.desktop', desktop('Q20 keyboard', 'setxkbmap -option altwin:swap_ralt_rwin'), user=True)

@@ -35,6 +35,8 @@ APPS = {
     'screenshots': ('Screenshot', ['xfce4-screenshooter']),
     'serial': ('Serial boards', ['xfce4-terminal', '--hold', '--execute', 'ghost-bruce', 'console']),
     'spatial': ('Spatial 3D', ['ghost-spatial']),
+    'hand': ('Hand control', ['xfce4-terminal', '--hold', '--execute', 'ghost-hand', 'start']),
+    'hand-calibrate': ('Calibrate hand control', ['xfce4-terminal', '--hold', '--execute', 'ghost-hand', 'calibrate']),
     'claude': ('Claude Code', ['xfce4-terminal', '--hold', '--execute', 'ghost-claude']),
     'codex': ('Codex', ['xfce4-terminal', '--hold', '--execute', 'ghost-codex']),
     'local-ai': ('Local chat', ['xfce4-terminal', '--hold', '--execute', 'ghost-assistant', 'chat', '--provider', 'local']),

@@ -20,7 +20,9 @@ jobs:
         run: |
           npm ci --prefix spatial --ignore-scripts --no-audit --no-fund
           python3 tests/test-pi5.py
+          python3 tests/test-hand-tracking.py
           node tests/test-mcp-regressions.js
+          node tests/test-mcp.js
           node --check spatial/app.js
           python3 -m compileall -q runtime install/pi5.py
           bash -n image/build-image.sh install/ghostboard-pi5.sh

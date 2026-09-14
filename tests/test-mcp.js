@@ -21,7 +21,8 @@ const check = (label, ok, detail) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ghostboard-workspace-'));
   const stopFile = path.join(workspace, '.agent-stop');
   fs.writeFileSync(path.join(workspace, 'README.txt'), 'workspace ready\n');
-  const srv = spawn('node', [SERVER], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GHOSTBOARD_WORKSPACE: workspace, GHOSTBOARD_STOP_FILE: stopFile } });
+  const handStatePath = path.join(workspace, 'hand-control.json');
+  const srv = spawn('node', [SERVER], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GHOSTBOARD_WORKSPACE: workspace, GHOSTBOARD_STOP_FILE: stopFile, GHOSTBOARD_HAND_STATE: handStatePath } });
   srv.stderr.on('data', d => process.stderr.write('    [srv] ' + d));
 
   const pending = new Map();
@@ -103,6 +104,13 @@ const check = (label, ok, detail) => {
   const stoppedWrite = await call('tools/call', { name: 'workspace_write', arguments: { path: 'blocked.txt', content: 'bad' } });
   check('STOP bloque aussi les modifications distantes', stoppedWrite.result.isError === true && !fs.existsSync(path.join(workspace, 'blocked.txt')));
   fs.unlinkSync(stopFile);
+
+  console.log('\nMCP computer use — suivi des mains (lecture seule)');
+  const handAbsent = await call('tools/call', { name: 'hand_status', arguments: {} });
+  check('hand_status exposé et lisible sans service', !handAbsent.result.isError && JSON.parse(handAbsent.result.content[0].text).state === 'DISABLED');
+  // Rien dans le schéma ne permet d'activer la caméra ou le contrôle.
+  const handTool = list.result.tools.find(t => t.name === 'hand_status');
+  check('hand_status est en lecture seule (aucun paramètre d\'entrée)', handTool && Object.keys(handTool.inputSchema.properties || {}).length === 0);
 
   const hasX = !!process.env.DISPLAY;
   console.log(`\nMCP computer use — outils réels (DISPLAY=${process.env.DISPLAY || 'aucun'})`);

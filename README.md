@@ -279,6 +279,58 @@ coordinates stay valid whichever mode you use. See
 
 ---
 
+## Hand control (gesture tracking)
+
+`ghost-hand` drives the desktop with a **Camera Module 3** (or any V4L2 USB
+camera). Everything runs **on the Pi**: no frame is ever sent to the Internet,
+written to disk, or kept after processing. Only normalized landmarks, gestures
+and Point & Command events come out of the pipeline.
+
+It is **disabled by default** after install. Activation is always local — from
+the control center or `ghost-hand start` — and the pointing gesture must be
+**held** to arm before any movement produces an action.
+
+```bash
+ghost-hand start          # arm (hold the pointing gesture to activate)
+ghost-hand mode pointer   # pointer | spatial | presentation
+ghost-hand status --json
+ghost-hand calibrate      # guided 4-corner calibration, 800 × 480 UI
+ghost-hand pause          # or open your palm
+ghost-hand stop           # releases any held mouse buttons
+ghost-hand doctor
+ghost-hand benchmark --seconds 30
+```
+
+**Pointer mode** — index moves the cursor; thumb-index pinch = left click;
+thumb-middle pinch = right click; double pinch = double-click; held pinch =
+drag-and-drop; two fingers = scroll; open palm = immediate pause; horizontal
+swipe = switch desktop. **Presentation mode** — swipe changes slide, index is a
+pointer, palm hides/shows it. **Spatial mode** feeds validated JSON commands to a
+loopback-only channel for GHOSTBOARD Spatial (see below).
+
+**Safety.** A five-state machine — `DISABLED → ARMED → ACTIVE ⇄ PAUSED`, plus
+`STOPPED` — governs every gesture. It obeys the same shared STOP file as the rest
+of Ghostboard: `ghost-system stop` or **Ctrl+Alt+Escape** instantly stops event
+injection, releases every held mouse button, and enters `STOPPED`; recovery
+needs `ghost-system resume` **and** a fresh local activation. Losing the hand, a
+camera close, or any exception also releases held buttons. Gestures never confirm
+a sensitive operation on their own (purchase, delete, send, credentials).
+
+**Engines.** A `HandTrackerBackend` interface makes the tracker pluggable:
+**MediaPipe Hand Landmarker** is the first engine, a **simulated** backend powers
+the tests, and there is a documented slot for future **Hailo** acceleration —
+not claimed until a compatible model is actually integrated and tested.
+
+```bash
+python3 tests/test-hand-tracking.py   # synthetic 21-point sequences, no camera/Pi/X needed
+```
+
+Light, occlusion and camera quality bound what any vision tracker can do; figures
+from `ghost-hand benchmark` are real measurements of the configured pipeline and
+are only meaningful once run on a real Pi 5 with a camera and MediaPipe.
+
+---
+
 ## Boot animation
 
 The GHOSTBOARD logotype does not appear — it **assembles**, in five acts, from
