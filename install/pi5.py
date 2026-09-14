@@ -26,13 +26,18 @@ xdg-utils desktop-file-utils gvfs gvfs-backends udisks2 upower
 rofi wmctrl scrot xdotool xvfb xauth chromium mousepad galculator
 papirus-icon-theme adwaita-icon-theme fonts-dejavu-core fontconfig librsvg2-bin
 librsvg2-common unzip zip file rsync htop openssh-client cryptsetup'''.split()
+# python3-opencv fournit le repli caméra V4L2 (USB) du suivi des mains. Picamera2
+# (Camera Module 3) est fourni par Raspberry Pi OS ; MediaPipe s'installe dans un
+# venv dédié (voir INSTALLATION-PI5-FR.md), car aucune roue apt épinglée fiable
+# n'existe pour Debian 13 ARM64.
 FULL = '''build-essential cmake pkg-config libcurl4-openssl-dev gdb tmux ripgrep jq sqlite3
 python3-pip python3-dev python3-gpiozero i2c-tools usbutils pciutils v4l-utils poppler-utils
+python3-opencv
 libreoffice-writer libreoffice-calc libreoffice-impress evince vlc
 keepassxc engrampa gnome-disk-utility ffmpeg'''.split()
-TOOLS = ['ghost-system', 'ghost-assistant', 'ghost-control-center', 'ghost-model', 'ghost-hardware', 'ghost-voice', 'ghost-remote', 'ghost-workspace', 'ghost-codex', 'ghost-browser',
+TOOLS = ['ghost-system', 'ghost-assistant', 'ghost-control-center', 'ghost-model', 'ghost-hardware', 'ghost-voice', 'ghost-remote', 'ghost-workspace', 'ghost-codex', 'ghost-spatial', 'ghost-browser',
          'ghost-bruce', 'ghost-run', 'ghost-llm', 'ghost-llm-proxy', 'ghost-claude',
-         'ghost-bench', 'ghost-status', 'ghost-theme', 'ghost-vault']
+         'ghost-bench', 'ghost-status', 'ghost-theme', 'ghost-vault', 'ghost-hand']
 
 
 def plan(profile):
@@ -41,7 +46,7 @@ def plan(profile):
         'profile': profile, 'packages': BASE + (FULL if profile == 'full' else []),
         'session': 'XFCE/X11 with LightDM',
         'preserved': ['Pi boot firmware', 'config.txt', 'cmdline.txt', 'kernel', 'native display mode', 'Bluetooth', 'accessibility', 'audio'],
-        'installed': ['control center', 'hybrid, visual and voice assistant', 'computer-use MCP', 'Pi 5 telemetry and fan profiles', 'paired remote development', 'settings backup/restore', 'diagnostics', 'application launchers'],
+        'installed': ['control center', 'hybrid, visual and voice assistant', 'local 3D spatial workbench', 'computer-use MCP', 'local hand-tracking control (disabled by default)', 'Pi 5 telemetry and fan profiles', 'paired remote development', 'settings backup/restore', 'diagnostics', 'application launchers'],
         'optional': ['Claude Code (--claude)', 'Codex CLI (--codex)', 'BlackBerry Q20 key mapping (--q20)'],
     }
 
@@ -109,10 +114,11 @@ class Installer:
             print('IBM Plex unavailable in configured repositories; using system font fallback.')
         # Copie pérenne pour les outils qui retrouvent encore le dépôt.
         target = Path('/opt/ghostboard-os')
-        for folder in ('theme', 'brand', 'desktop', 'runtime', 'mcp-computer-use', 'tools', 'companion'):
+        for folder in ('theme', 'brand', 'desktop', 'runtime', 'mcp-computer-use', 'spatial', 'tools', 'companion'):
             for source in (REPO / folder).rglob('*'):
-                if source.is_file() and '__pycache__' not in source.parts:
+                if source.is_file() and '__pycache__' not in source.parts and 'node_modules' not in source.parts:
                     self.put(target / source.relative_to(REPO), source.read_bytes())
+        self.run(['npm', 'ci', '--prefix', target / 'spatial', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'])
         for name in TOOLS:
             self.put('/usr/local/bin/' + name, (REPO / 'tools' / name).read_bytes(), 0o755)
         for source in (REPO / 'runtime').glob('*.py'):
@@ -165,6 +171,8 @@ class Installer:
             ('ghost-assistant', 'GHOSTBOARD Assistant', 'xfce4-terminal --hold --execute ghost-assistant act', False),
             ('ghost-system-doctor', 'GHOSTBOARD Diagnostics', 'xfce4-terminal --hold --execute ghost-system doctor', False),
             ('ghost-local-ai', 'GHOSTBOARD Local AI', 'xfce4-terminal --hold --execute ghost-assistant chat --provider local', False),
+            ('ghost-spatial', 'GHOSTBOARD Spatial', 'ghost-spatial', False),
+            ('ghost-hand', 'GHOSTBOARD Hand Control', 'xfce4-terminal --hold --execute ghost-hand start', False),
         ]:
             self.put('/usr/share/applications/' + name + '.desktop', desktop(label, cmd, terminal))
         self.put('/usr/local/bin/ghostboard-pi5-session', '#!/bin/sh\nexport XDG_CURRENT_DESKTOP=XFCE\nexport XDG_SESSION_TYPE=x11\nexec startxfce4\n', 0o755)
@@ -189,6 +197,21 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 ''', user=True)
+        # Suivi des mains : service utilisateur DÉSACTIVÉ par défaut. Il n'est ni
+        # activé ni démarré ici ; l'utilisateur l'active explicitement depuis le
+        # centre de contrôle ou « ghost-hand start ». Le contrôle gestuel reste
+        # donc inactif après installation.
+        self.put(self.home / '.config/systemd/user/ghostboard-hand.service', '''[Unit]
+Description=GHOSTBOARD Hand Control (gesture tracking; disabled by default, local only)
+After=graphical-session.target
+PartOf=graphical-session.target
+[Service]
+Environment=DISPLAY=:0
+ExecStart=/usr/local/bin/ghost-hand run
+Restart=on-failure
+[Install]
+WantedBy=graphical-session.target
+''', user=True)
         if q20:
             self.put(self.home / '.config/autostart/ghost-q20.desktop', desktop('Q20 keyboard', 'setxkbmap -option altwin:swap_ralt_rwin'), user=True)
         if claude:
@@ -206,7 +229,7 @@ WantedBy=default.target
             if listing.returncode != 0:
                 self.run([codex_bin, 'mcp', 'add', 'ghostboard-computer-use-pi5', '--', 'node', '/usr/local/lib/ghostboard/mcp-computer-use/server.js'], user=True)
         self.put('/etc/profile.d/ghostboard-pi5.sh', 'export GHOSTBOARD_REPO=/opt/ghostboard-os\nexport GHOSTBOARD_SHARE=/usr/share/ghostboard\n')
-        self.put('/var/lib/ghostboard/pi5-install.json', json.dumps({'version': '0.3.0-pi5-preview', 'profile': self.profile, 'user': self.user, 'backup': str(self.backup_dir)}, indent=2))
+        self.put('/var/lib/ghostboard/pi5-install.json', json.dumps({'version': '0.4.0-pi5-preview', 'profile': self.profile, 'user': self.user, 'backup': str(self.backup_dir)}, indent=2))
         print('\nInstalled. Log out/reboot and select GHOSTBOARD Pi 5. Then run ghost-system doctor.')
         print('Configuration backups: ' + str(self.backup_dir))
 

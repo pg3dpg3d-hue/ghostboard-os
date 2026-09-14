@@ -7,6 +7,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import tomllib
 import ghostboard as gb
+try:
+    import hand_tracking as hand
+except Exception:  # le centre de contrôle reste utilisable sans le module
+    hand = None
 
 
 class Center(tk.Tk):
@@ -45,14 +49,65 @@ class Center(tk.Tk):
         actions.pack(fill='x', pady=12)
         for text, action in [('Diagnostics', lambda: self.open('diagnostics')), ('Updates', lambda: self.open('updates')), ('Backup', self.backup), ('Restore', self.restore), ('Resume agent', self.resume)]:
             ttk.Button(actions, text=text, command=action).pack(side='left', padx=3)
-        self.add_grid(book, 'Applications', ['browser', 'files', 'terminal', 'editor', 'office', 'media', 'calculator', 'passwords', 'screenshots', 'processes', 'serial'])
+        self.add_grid(book, 'Applications', ['browser', 'files', 'terminal', 'editor', 'office', 'media', 'spatial', 'calculator', 'passwords', 'screenshots', 'processes', 'serial'])
         self.add_grid(book, 'Settings', ['wifi', 'bluetooth', 'audio', 'display', 'power', 'settings', 'hardware', 'remote'])
         self.add_grid(book, 'Assistant', ['assistant', 'local-ai', 'local-vision', 'codex', 'claude', 'ai-setup', 'voice', 'agent-browser', 'agent-assistant'])
+        self.add_hand_tab(book)
         self.note = tk.StringVar(value='Ctrl+Alt+Escape stops computer use · No cloud connection until you start an assistant.')
         ttk.Label(self, textvariable=self.note, wraplength=720, padding=10).pack(fill='x')
         self.bind('<Escape>', lambda _: self.stop())
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.after(50, self.refresh)
+
+    def add_hand_tab(self, book):
+        frame = ttk.Frame(book, padding=12)
+        book.add(frame, text='Hand control')
+        # Indicateur permanent : allumé quand la caméra du suivi fonctionne.
+        self.hand_indicator = tk.StringVar(value='○ Camera off')
+        ttk.Label(frame, textvariable=self.hand_indicator, font=('sans-serif', 12, 'bold')).pack(anchor='w')
+        self.hand_health = tk.StringVar(value='Hand control is disabled by default. Activate it to control the desktop with your hand.')
+        ttk.Label(frame, textvariable=self.hand_health, justify='left', wraplength=700).pack(anchor='w', pady=8)
+        controls = ttk.Frame(frame)
+        controls.pack(fill='x', pady=6)
+        for text, args in [('Activate', ['start']), ('Pause', ['pause']),
+                           ('Stop', ['stop']), ('Calibrate', ['calibrate'])]:
+            ttk.Button(controls, text=text, command=lambda a=args: self.hand_command(a)).pack(side='left', padx=3)
+        modes = ttk.Frame(frame)
+        modes.pack(fill='x', pady=6)
+        ttk.Label(modes, text='Mode:').pack(side='left', padx=(0, 6))
+        for mode in ('pointer', 'spatial', 'presentation'):
+            ttk.Button(modes, text=mode.capitalize(), command=lambda m=mode: self.hand_command(['mode', m])).pack(side='left', padx=3)
+
+    def hand_command(self, args):
+        try:
+            self.run_command(['ghost-hand', *args])
+        except Exception as exc:
+            messagebox.showerror('Hand control', str(exc))
+
+    def refresh_hand(self):
+        if hand is None:
+            return
+        try:
+            state = hand.read_state()
+        except Exception:
+            return
+        running = state.get('running')
+        tracking = state.get('tracking')
+        if running and tracking:
+            self.hand_indicator.set('● Camera active — hand tracking')
+        elif running:
+            self.hand_indicator.set('◐ Hand control running (no hand detected)')
+        else:
+            self.hand_indicator.set('○ Camera off')
+        if running:
+            self.hand_health.set(
+                f"State: {state.get('state')}    Mode: {state.get('mode')}\n"
+                f"Camera: {state.get('camera')}    Backend: {state.get('backend')}\n"
+                f"FPS capture/inference: {state.get('fps_capture')}/{state.get('fps_inference')}\n"
+                f"Confidence: {state.get('confidence')}    Latency: {state.get('latency_ms')} ms    Dropped: {state.get('dropped_frames')}\n"
+                f"Buttons held: {', '.join(state.get('held_buttons') or []) or 'none'}")
+        else:
+            self.hand_health.set('Hand control is disabled by default. Activate it to control the desktop with your hand.')
 
     def add_grid(self, book, label, apps):
         frame = ttk.Frame(book, padding=12)
@@ -97,6 +152,7 @@ class Center(tk.Tk):
                 messagebox.showerror('Restore failed', str(exc))
 
     def refresh(self):
+        self.refresh_hand()
         if self.future is None:
             self.future = self.pool.submit(gb.status)
         if self.future.done():

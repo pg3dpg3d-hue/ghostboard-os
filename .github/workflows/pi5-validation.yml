@@ -14,12 +14,16 @@ jobs:
       - name: Install test environment
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates python3 python3-tk nodejs xvfb xauth xdotool scrot wmctrl xterm
+          apt-get install -y --no-install-recommends git ca-certificates python3 python3-tk nodejs npm xvfb xauth xdotool scrot wmctrl xterm
       - uses: actions/checkout@v4
       - name: Python and protocol regression tests
         run: |
+          npm ci --prefix spatial --ignore-scripts --no-audit --no-fund
           python3 tests/test-pi5.py
+          python3 tests/test-hand-tracking.py
           node tests/test-mcp-regressions.js
+          node tests/test-mcp.js
+          node --check spatial/app.js
           python3 -m compileall -q runtime install/pi5.py
           bash -n image/build-image.sh install/ghostboard-pi5.sh
       - name: Real X11 integration

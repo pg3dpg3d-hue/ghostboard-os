@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""ghost-hand — contrôle gestuel local de GHOSTBOARD (suivi des mains, Pi 5)."""
+import sys
+from pathlib import Path
+
+root = Path('/usr/local/lib/ghostboard/runtime')
+if not root.exists():
+    root = Path(__file__).resolve().parents[1] / 'runtime'
+sys.path.insert(0, str(root))
+
+from hand_tracking import main
+
+sys.exit(main())

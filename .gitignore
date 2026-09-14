@@ -5,6 +5,7 @@ build/
 # Volontairement hors dépôt : version épinglée + somme de contrôle dans
 # boot-animation/fetch-vendor.sh, donc l'installation reste reproductible.
 boot-animation/vendor/
+spatial/node_modules/
 
 # Palette injectée dans la page de l'animation : générée depuis brand/palette.toml
 boot-animation/palette.js

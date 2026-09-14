@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+  <meta name="theme-color" content="#0b0711">
+  <title>GHOSTBOARD Spatial</title>
+  <link rel="stylesheet" href="/app/styles.css">
+  <script type="importmap">
+    {"imports":{"three":"/vendor/build/three.module.js","three/addons/":"/vendor/examples/jsm/"}}
+  </script>
+</head>
+<body>
+  <header>
+    <div class="brand"><b>GHOSTBOARD</b><span>SPATIAL WORKBENCH</span></div>
+    <div id="status">Prêt · déposez un GLB, GLTF, STL, OBJ ou PLY</div>
+    <button id="open">Ouvrir</button><input id="files" type="file" multiple accept=".glb,.gltf,.stl,.obj,.ply">
+    <button id="fit">Cadrer</button><button id="snapshot">Capture</button><button id="export">Rapport</button>
+  </header>
+  <main>
+    <aside class="left">
+      <h2>ASSEMBLAGE</h2>
+      <div id="tree" class="tree"><p class="empty">Aucun modèle chargé</p></div>
+      <h2>VUES</h2>
+      <div class="views"><button data-view="perspective">3D</button><button data-view="top">Haut</button><button data-view="front">Face</button><button data-view="right">Droite</button></div>
+      <h2>INSPECTION</h2>
+      <button id="measure" class="wide">Mesurer deux points</button>
+      <button id="annotate" class="wide">Ajouter une annotation</button>
+      <button id="clearMarks" class="wide subtle">Effacer les repères</button>
+    </aside>
+    <section id="viewport">
+      <canvas id="scene"></canvas>
+      <div id="drop"><b>DÉPOSEZ UN MODÈLE 3D</b><span>Analyse locale · aucun envoi réseau</span></div>
+      <div id="mode"></div>
+      <div id="telemetry">0 triangle · 0 appel</div>
+    </section>
+    <aside class="right">
+      <h2>SÉLECTION</h2>
+      <dl id="properties"><dt>Objet</dt><dd>—</dd><dt>Dimensions</dt><dd>—</dd><dt>Position</dt><dd>—</dd><dt>Triangles</dt><dd>—</dd></dl>
+      <label>Unités <select id="units"><option>mm</option><option>cm</option><option selected>m</option></select></label>
+      <h2>ANALYSE</h2>
+      <label>Vue éclatée <output id="explodeValue">0%</output><input id="explode" type="range" min="0" max="100" value="0"></label>
+      <label>Coupe verticale <output id="clipValue">désactivée</output><input id="clip" type="range" min="-101" max="100" value="-101"></label>
+      <label class="check"><input id="xray" type="checkbox"> Transparence rayons X</label>
+      <label class="check"><input id="wire" type="checkbox"> Maillage filaire</label>
+      <h2>SESSION</h2>
+      <div id="measurements" class="notes"><p class="empty">Aucune mesure</p></div>
+      <div id="annotations" class="notes"><p class="empty">Aucune annotation</p></div>
+    </aside>
+  </main>
+  <footer>F cadrer · M mesurer · A annoter · 1–4 vues · Échap annuler</footer>
+  <script type="module" src="/app/app.js"></script>
+</body>
+</html>

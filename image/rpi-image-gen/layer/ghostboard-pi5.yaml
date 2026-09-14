@@ -1,6 +1,6 @@
 # METABEGIN
 # X-Env-Layer-Name: ghostboard-pi5
-# X-Env-Layer-Version: 0.3.0
+# X-Env-Layer-Version: 0.4.0
 # X-Env-Layer-Category: application
 # X-Env-Layer-Desc: GHOSTBOARD Pi 5 desktop, tools and local computer use.
 # X-Env-Layer-Requires: trixie-minbase,device-user-admin

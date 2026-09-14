@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+root = Path('/usr/local/lib/ghostboard/runtime')
+if not root.exists():
+    root = Path(__file__).resolve().parents[1] / 'runtime'
+sys.path.insert(0, str(root))
+from spatial import main
+sys.exit(main())

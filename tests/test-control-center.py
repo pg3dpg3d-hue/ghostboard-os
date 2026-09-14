@@ -12,7 +12,9 @@ app = Center()
 try:
     app.update()
     tabs = next(w for w in app.winfo_children() if isinstance(w, ttk.Notebook))
-    assert len(tabs.tabs()) == 4
+    assert len(tabs.tabs()) == 5, tabs.tabs()
+    labels = [tabs.tab(t, 'text') for t in tabs.tabs()]
+    assert 'Hand control' in labels, labels
     for size in ('760x430', '800x480'):
         app.geometry(size)
         app.update()
@@ -21,6 +23,6 @@ try:
             app.update()
             for frame in app.winfo_children():
                 assert frame.winfo_x() + frame.winfo_width() <= app.winfo_width() + 1
-    print('PASS: native control center, four tabs, 760x430 and 800x480 layouts.')
+    print('PASS: native control center, five tabs (incl. Hand control), 760x430 and 800x480 layouts.')
 finally:
     app.close()

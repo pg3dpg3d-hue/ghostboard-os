@@ -36,6 +36,7 @@ const path = require('path');
 
 const DISPLAY = process.env.GHOSTBOARD_MCP_DISPLAY || process.env.DISPLAY || ':0';
 const STOP_FILE = process.env.GHOSTBOARD_STOP_FILE || path.join(os.homedir(), '.local/state/ghostboard/agent.stop');
+const HAND_STATE_FILE = process.env.GHOSTBOARD_HAND_STATE || path.join(os.homedir(), '.local/state/ghostboard/hand-control.json');
 const WORKSPACE = path.resolve(process.env.GHOSTBOARD_WORKSPACE || path.join(os.homedir(), 'Ghostboard'));
 let activeController = null;
 let activeId = null;
@@ -506,6 +507,27 @@ TOOLS.workspace_exec = {
     const result = await run(args.command, argv, { cwd, timeout });
     const output = Buffer.concat([result.stdout, result.stderr]).toString('utf8');
     return { content: [{ type: 'text', text: output || '(command completed without output)' }] };
+  },
+};
+
+TOOLS.hand_status = {
+  description: 'Read-only status of GHOSTBOARD Hand Control (gesture tracking): state, mode, camera, FPS, confidence and the last recognized Point & Command event. This tool cannot enable the camera or gesture control; a person must activate hand control locally.',
+  inputSchema: { type: 'object', properties: {} },
+  async handler() {
+    if (!fs.existsSync(HAND_STATE_FILE)) {
+      return { content: [{ type: 'text', text: JSON.stringify({ state: 'DISABLED', running: false, note: 'Hand control is not running. A person can start it locally with ghost-hand start or the control center.' }, null, 2) }] };
+    }
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(HAND_STATE_FILE, 'utf8'));
+    } catch (_) {
+      return { content: [{ type: 'text', text: JSON.stringify({ state: 'unknown', running: false }, null, 2) }] };
+    }
+    // « running » = état écrit récemment par le moteur (moins de 5 s).
+    let running = false;
+    try { running = (Date.now() - fs.statSync(HAND_STATE_FILE).mtimeMs) < 5000; } catch (_) {}
+    data.running = running;
+    return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   },
 };
 
