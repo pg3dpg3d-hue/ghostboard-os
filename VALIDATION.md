@@ -16,7 +16,7 @@ Validation locale : Windows, Python 3.12, Node.js. Aucun Pi 5, serveur X11 Linux
 | Shell syntax (29 scripts) | PASS |
 | XFCE XML configuration | PASS |
 
-Les tests Python utilisent de vrais fichiers temporaires, un serveur HTTP local de test et le transport MCP réel. Ils vérifient aussi la recette d’image, les profils de ventilation réversibles, la vision locale, le refus d’une commande vocale et les configurations MCP distantes de Codex et Claude. Les tests de régression MCP simulent uniquement les processus X11. Les widgets du centre de contrôle ont été créés sur Windows aux dimensions 760 × 430 et 800 × 480.
+Les tests Python utilisent de vrais fichiers temporaires, un serveur HTTP local de test et le transport MCP réel. Ils vérifient aussi la recette d’image, les profils de ventilation réversibles, la vision locale, le refus d’une commande vocale et les configurations MCP distantes de Codex et Claude. Le test MCP réel crée un dépôt temporaire, y lit et écrit des fichiers, exécute une commande Node, refuse une sortie de dossier et vérifie que le STOP bloque une écriture distante. Les tests de régression MCP simulent uniquement les processus X11. Les widgets du centre de contrôle ont été créés sur Windows aux dimensions 760 × 430 et 800 × 480.
 
 La génération du thème a produit les ressources GTK, XFWM, rofi, palette et boutons PNG. Le convertisseur SVG → PNG n’est pas présent sur l’hôte Windows ; il figure dans les paquets de l’installateur Linux.
 
@@ -25,6 +25,7 @@ La génération du thème a produit les ressources GTK, XFWM, rofi, palette et b
 - Construction complète de l’image avec rpi-image-gen, faute d’hôte Linux compatible dans cette session.
 - Installation apt complète sous Raspberry Pi OS et disponibilité finale de tous les paquets.
 - Installation et authentification réelles de Codex CLI, Claude Code et Tailscale sur ARM64.
+- Connexion MCP réelle à travers Tailscale SSH entre deux machines.
 - Démarrage réel ARM64, connexion LightDM/XFCE, pilotes HDMI/DSI, Wi-Fi, Bluetooth, audio et batterie.
 - Télémétrie et réglage réel du ventilateur actif.
 - Capture caméra, lecture PDF et inférence multimodale réelle par llama.cpp.
@@ -32,7 +33,7 @@ La génération du thème a produit les ressources GTK, XFWM, rofi, palette et b
 - Contrôle réel d’une application X11, session Xvfb séparée et verrouillage du bureau.
 - Appels à un fournisseur IA réel, stockage dans le trousseau Linux et inférence locale sur Pi.
 
-Le workflow `.github/workflows/pi5-validation.yml` a réussi sur la branche publiée. Il prépare un conteneur Debian 13 avec Xvfb et inclut une saisie réellement reçue par xterm, une capture PNG et la résolution des paquets. Cette CI vérifie le logiciel x86_64, pas le matériel ARM64.
+Le workflow `.github/workflows/pi5-validation.yml` a réussi sur la branche publiée. Il prépare un conteneur Debian 13 avec Xvfb et inclut une saisie réellement reçue par xterm, une capture PNG, les outils de dépôt distant et la résolution des paquets. Cette CI vérifie le logiciel x86_64, pas le matériel ARM64.
 
 Pour valider X11 sur Linux :
 

@@ -36,12 +36,13 @@ const path = require('path');
 
 const DISPLAY = process.env.GHOSTBOARD_MCP_DISPLAY || process.env.DISPLAY || ':0';
 const STOP_FILE = process.env.GHOSTBOARD_STOP_FILE || path.join(os.homedir(), '.local/state/ghostboard/agent.stop');
+const WORKSPACE = path.resolve(process.env.GHOSTBOARD_WORKSPACE || path.join(os.homedir(), 'Ghostboard'));
 let activeController = null;
 let activeId = null;
 let shuttingDown = false;
 const EXEC_TIMEOUT = 15000;
 
-const SERVER_INFO = { name: 'ghostboard-computer-use', version: '1.1.0' };
+const SERVER_INFO = { name: 'ghostboard-computer-use', version: '1.2.0' };
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
 // stdout est réservé au protocole. Tout le reste part sur stderr.
@@ -55,7 +56,7 @@ function run(cmd, args, opts = {}) {
     if (!opts.releaseOnly && (activeController?.signal.aborted || fs.existsSync(STOP_FILE))) {
       return reject(new Error('Agent stopped. Resume explicitly with ghost-system resume.'));
     }
-    const child = spawn(cmd, args, { env: { ...process.env, DISPLAY }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { env: { ...process.env, DISPLAY }, cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     const out = [], err = []; let bytes = 0, cause = null;
     const kill = (reason) => { cause = reason; child.kill('SIGKILL'); };
     const timeout = setTimeout(() => kill('command timed out'), opts.timeout || EXEC_TIMEOUT);
@@ -68,8 +69,8 @@ function run(cmd, args, opts = {}) {
     child.on('error', e => { cleanup(); reject(e); });
     child.on('close', code => {
       cleanup();
-      if (cause || code !== 0) reject(new Error(cause || `${cmd}: ${Buffer.concat(err).toString().trim() || code}`));
-      else resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
+      if (cause || (code !== 0 && !opts.allowNonzero)) reject(new Error(cause || `${cmd}: ${Buffer.concat(err).toString().trim() || code}`));
+      else resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err), code });
     });
     child.stdin.on('error', () => {});
     child.stdin.end(opts.input || '');
@@ -89,6 +90,26 @@ async function point(args) {
 
 const has = (cmd) =>
   spawnSync('sh', ['-c', `command -v ${cmd}`], { timeout: 4000 }).status === 0;
+
+function ensureRunning() {
+  if (activeController?.signal.aborted || fs.existsSync(STOP_FILE)) {
+    throw new Error('Agent stopped. Resume explicitly with ghost-system resume.');
+  }
+}
+
+function workspacePath(relative = '.', forWrite = false) {
+  if (typeof relative !== 'string' || relative.length > 4096 || relative.includes('\0')) throw new Error('Invalid workspace path.');
+  const parts = relative.replaceAll('\\', '/').split('/');
+  if (parts.includes('.git')) throw new Error('Direct access to .git is refused; use the git command.');
+  const candidate = path.resolve(WORKSPACE, relative);
+  if (candidate !== WORKSPACE && !candidate.startsWith(WORKSPACE + path.sep)) throw new Error('Path escapes the workspace.');
+  const existing = forWrite && !fs.existsSync(candidate) ? path.dirname(candidate) : candidate;
+  if (fs.existsSync(existing)) {
+    const real = fs.realpathSync(existing);
+    if (real !== WORKSPACE && !real.startsWith(WORKSPACE + path.sep)) throw new Error('Symbolic link escapes the workspace.');
+  }
+  return candidate;
+}
 
 // ---------------------------------------------------------------------------
 //  Écran
@@ -377,6 +398,117 @@ TOOLS.drag = {
   },
 };
 
+TOOLS.workspace_status = {
+  description: 'Inspect the writable Ghostboard Git checkout and host health before editing or diagnosing the Pi.',
+  inputSchema: { type: 'object', properties: {} },
+  async handler() {
+    ensureRunning();
+    if (!fs.existsSync(path.join(WORKSPACE, '.git'))) throw new Error('Workspace missing. Run ghost-workspace init on the Pi.');
+    const git = await run('git', ['status', '--short', '--branch'], { cwd: WORKSPACE });
+    const doctor = await run('ghost-system', ['doctor', '--json'], { cwd: WORKSPACE, allowNonzero: true }).catch(e => ({ stdout: Buffer.from(e.message) }));
+    return { content: [{ type: 'text', text: `Workspace: ${WORKSPACE}\n${git.stdout.toString()}\nDiagnostics:\n${doctor.stdout.toString()}` }] };
+  },
+};
+
+TOOLS.workspace_list = {
+  description: 'List files and directories inside the writable Ghostboard checkout without following symlinks.',
+  inputSchema: { type: 'object', properties: { path: { type: 'string', default: '.' }, depth: { type: 'integer', default: 2 } } },
+  async handler(args) {
+    ensureRunning();
+    const start = workspacePath(args.path || '.');
+    const depth = integer(args.depth ?? 2, 'depth', 0, 6);
+    const found = [];
+    function walk(current, level) {
+      if (found.length >= 1000) return;
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        if (entry.name === '.git') continue;
+        const full = path.join(current, entry.name);
+        const rel = path.relative(WORKSPACE, full) || '.';
+        found.push(rel + (entry.isDirectory() ? '/' : entry.isSymbolicLink() ? ' -> [symlink]' : ''));
+        if (entry.isDirectory() && !entry.isSymbolicLink() && level < depth) walk(full, level + 1);
+        if (found.length >= 1000) break;
+      }
+    }
+    const stat = fs.lstatSync(start);
+    if (stat.isSymbolicLink()) throw new Error('Refusing to list through a symbolic link.');
+    if (stat.isDirectory()) walk(start, 0); else found.push(path.relative(WORKSPACE, start));
+    return { content: [{ type: 'text', text: found.join('\n') + (found.length >= 1000 ? '\n[truncated]' : '') }] };
+  },
+};
+
+TOOLS.workspace_read = {
+  description: 'Read a UTF-8 source or configuration file inside the writable Ghostboard checkout (maximum 1 MiB).',
+  inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+  async handler(args) {
+    ensureRunning();
+    const target = workspacePath(args.path);
+    const stat = fs.statSync(target);
+    if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('File must be regular and at most 1 MiB.');
+    const data = fs.readFileSync(target);
+    if (data.includes(0)) throw new Error('Binary files are not returned.');
+    return { content: [{ type: 'text', text: data.toString('utf8') }] };
+  },
+};
+
+TOOLS.workspace_write = {
+  description: 'Atomically write one UTF-8 file inside the writable Ghostboard checkout. Review the diff afterwards.',
+  inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
+  async handler(args) {
+    ensureRunning();
+    if (typeof args.content !== 'string' || Buffer.byteLength(args.content) > 1024 * 1024) throw new Error('Content must be UTF-8 and at most 1 MiB.');
+    const target = workspacePath(args.path, true);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    workspacePath(path.relative(WORKSPACE, target), true);
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error('Refusing to replace a symbolic link.');
+    const temp = path.join(path.dirname(target), `.ghostboard-write-${process.pid}-${Date.now()}`);
+    try {
+      fs.writeFileSync(temp, args.content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      if (fs.existsSync(target)) fs.chmodSync(temp, fs.statSync(target).mode & 0o777);
+      fs.renameSync(temp, target);
+    } finally { try { fs.unlinkSync(temp); } catch (_) {} }
+    return { content: [{ type: 'text', text: `Wrote ${Buffer.byteLength(args.content)} bytes to ${path.relative(WORKSPACE, target)}.` }] };
+  },
+};
+
+TOOLS.workspace_patch = {
+  description: 'Apply a unified Git patch to the writable checkout after git apply validates it.',
+  inputSchema: { type: 'object', properties: { patch: { type: 'string' } }, required: ['patch'] },
+  async handler(args) {
+    ensureRunning();
+    if (typeof args.patch !== 'string' || Buffer.byteLength(args.patch) > 2 * 1024 * 1024) throw new Error('Patch must be text and at most 2 MiB.');
+    await run('git', ['apply', '--check', '--whitespace=error-all', '-'], { cwd: WORKSPACE, input: args.patch });
+    await run('git', ['apply', '--whitespace=error-all', '-'], { cwd: WORKSPACE, input: args.patch });
+    return { content: [{ type: 'text', text: 'Patch applied. Run git diff --check and the relevant tests.' }] };
+  },
+};
+
+TOOLS.workspace_exec = {
+  description: 'Run a development or diagnostic command directly on the Pi, in the writable checkout, without a shell. Commands run as the paired desktop user.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      command: { type: 'string' },
+      args: { type: 'array', items: { type: 'string' }, default: [] },
+      cwd: { type: 'string', default: '.' },
+      timeout_seconds: { type: 'integer', default: 30 },
+    },
+    required: ['command'],
+  },
+  async handler(args) {
+    ensureRunning();
+    const allowed = new Set(['git', 'python3', 'node', 'npm', 'bash', 'sh', 'rg', 'cmake', 'make', 'ninja', 'pytest', 'ghost-system', 'ghost-hardware', 'ghost-model', 'systemctl', 'journalctl']);
+    if (!allowed.has(args.command)) throw new Error('Command is not in the developer allowlist.');
+    const argv = args.args || [];
+    if (!Array.isArray(argv) || argv.length > 128 || argv.some(x => typeof x !== 'string' || x.length > 8192 || x.includes('\0'))) throw new Error('Invalid command arguments.');
+    const cwd = workspacePath(args.cwd || '.');
+    if (!fs.statSync(cwd).isDirectory()) throw new Error('Working directory is not a directory.');
+    const timeout = integer(args.timeout_seconds ?? 30, 'timeout_seconds', 1, 120) * 1000;
+    const result = await run(args.command, argv, { cwd, timeout });
+    const output = Buffer.concat([result.stdout, result.stderr]).toString('utf8');
+    return { content: [{ type: 'text', text: output || '(command completed without output)' }] };
+  },
+};
+
 // ---------------------------------------------------------------------------
 //  JSON-RPC 2.0 sur stdio
 // ---------------------------------------------------------------------------
@@ -400,7 +532,8 @@ async function handle(req) {
         instructions:
           "Contrôle de l'écran du cyberdeck GHOSTBOARD (800x480). "
           + "Prends une capture avant d'agir et une autre après pour vérifier. "
-          + "Les coordonnées sont en pixels écran, origine en haut à gauche.",
+          + "Les coordonnées sont en pixels écran, origine en haut à gauche. "
+          + `Le dépôt de développement distant est limité à ${WORKSPACE}.`,
       });
     }
     case 'notifications/initialized':

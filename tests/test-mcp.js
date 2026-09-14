@@ -6,6 +6,8 @@
  * de faire tomber le transport — c'est ce qui compte pour l'agent.
  */
 const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const SERVER = path.join(__dirname, '..', 'mcp-computer-use', 'server.js');
@@ -16,7 +18,10 @@ const check = (label, ok, detail) => {
 };
 
 (async () => {
-  const srv = spawn('node', [SERVER], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ghostboard-workspace-'));
+  const stopFile = path.join(workspace, '.agent-stop');
+  fs.writeFileSync(path.join(workspace, 'README.txt'), 'workspace ready\n');
+  const srv = spawn('node', [SERVER], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GHOSTBOARD_WORKSPACE: workspace, GHOSTBOARD_STOP_FILE: stopFile } });
   srv.stderr.on('data', d => process.stderr.write('    [srv] ' + d));
 
   const pending = new Map();
@@ -58,7 +63,7 @@ const check = (label, ok, detail) => {
   const list = await call('tools/list', {});
   const names = list.result.tools.map(t => t.name).sort();
   console.log('\nMCP computer use — catalogue');
-  for (const required of ['screenshot', 'click', 'type', 'key']) {
+  for (const required of ['screenshot', 'click', 'type', 'key', 'workspace_read', 'workspace_write', 'workspace_exec']) {
     check(`outil « ${required} » exposé`, names.includes(required));
   }
   check('schémas d\'entrée complets',
@@ -78,6 +83,26 @@ const check = (label, ok, detail) => {
   const noArgs = await call('tools/call', { name: 'click', arguments: { x: 'abc', y: 2 } });
   check('coordonnées non numériques rejetées',
         noArgs.result && noArgs.result.isError === true);
+
+  console.log('\nMCP computer use — hôte développeur');
+  const read = await call('tools/call', { name: 'workspace_read', arguments: { path: 'README.txt' } });
+  check('lecture du dépôt distant', read.result.content[0].text === 'workspace ready\n');
+  const write = await call('tools/call', { name: 'workspace_write', arguments: { path: 'runtime/generated.txt', content: 'written remotely\n' } });
+  check('écriture atomique dans le dépôt', !write.result.isError && fs.readFileSync(path.join(workspace, 'runtime/generated.txt'), 'utf8') === 'written remotely\n');
+  const overwrite = await call('tools/call', { name: 'workspace_write', arguments: { path: 'runtime/generated.txt', content: 'updated remotely\n' } });
+  check('remplacement atomique dans le dépôt', !overwrite.result.isError && fs.readFileSync(path.join(workspace, 'runtime/generated.txt'), 'utf8') === 'updated remotely\n');
+  const escape = await call('tools/call', { name: 'workspace_read', arguments: { path: '../outside' } });
+  check('sortie du dépôt refusée', escape.result.isError === true);
+  const directGit = await call('tools/call', { name: 'workspace_read', arguments: { path: '.git/config' } });
+  check('accès direct à .git refusé', directGit.result.isError === true);
+  const exec = await call('tools/call', { name: 'workspace_exec', arguments: { command: 'node', args: ['-e', 'process.stdout.write(process.cwd())'] } });
+  check('commande de développement exécutée dans le dépôt', !exec.result.isError && path.resolve(exec.result.content[0].text) === path.resolve(workspace));
+  const deniedCommand = await call('tools/call', { name: 'workspace_exec', arguments: { command: 'powershell', args: [] } });
+  check('commande hors liste refusée', deniedCommand.result.isError === true);
+  fs.writeFileSync(stopFile, 'stop');
+  const stoppedWrite = await call('tools/call', { name: 'workspace_write', arguments: { path: 'blocked.txt', content: 'bad' } });
+  check('STOP bloque aussi les modifications distantes', stoppedWrite.result.isError === true && !fs.existsSync(path.join(workspace, 'blocked.txt')));
+  fs.unlinkSync(stopFile);
 
   const hasX = !!process.env.DISPLAY;
   console.log(`\nMCP computer use — outils réels (DISPLAY=${process.env.DISPLAY || 'aucun'})`);
@@ -117,6 +142,7 @@ const check = (label, ok, detail) => {
   check('ping après erreurs -> serveur toujours vivant', !!ping.result);
 
   srv.stdin.end();
+  fs.rmSync(workspace, { recursive: true, force: true });
   console.log(`\n${fail ? 'ÉCHEC' : 'SUCCÈS'} : ${pass} test(s) réussi(s), ${fail} échec(s)`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('ERREUR :', e.message); process.exit(1); });

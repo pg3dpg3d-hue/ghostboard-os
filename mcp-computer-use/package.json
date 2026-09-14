@@ -1,7 +1,7 @@
 {
   "name": "ghostboard-computer-use",
-  "version": "1.1.0",
-  "description": "MCP server exposing the GHOSTBOARD deck screen to Claude Code — screenshot, click, type, key",
+  "version": "1.2.0",
+  "description": "MCP server exposing the GHOSTBOARD screen and writable development workspace to Codex and Claude",
   "type": "commonjs",
   "main": "server.js",
   "bin": { "ghostboard-computer-use": "./server.js" },

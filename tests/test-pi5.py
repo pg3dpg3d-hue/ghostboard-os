@@ -268,7 +268,7 @@ class AssistantTests(unittest.TestCase):
         mcp = assistant.MCP(ROOT / 'mcp-computer-use/server.js')
         try:
             tools = mcp.call('tools/list', {})['tools']
-            self.assertTrue({'screenshot', 'drag', 'windows', 'focus_window'} <= {t['name'] for t in tools})
+            self.assertTrue({'screenshot', 'drag', 'windows', 'focus_window', 'workspace_read', 'workspace_write', 'workspace_exec'} <= {t['name'] for t in tools})
         finally:
             mcp.close()
 

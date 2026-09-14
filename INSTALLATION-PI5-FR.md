@@ -157,7 +157,9 @@ ghost-remote client-config --tool codex --host ghostboard.nom-tailnet.ts.net --u
 ghost-remote client-config --tool claude --host ghostboard.nom-tailnet.ts.net --user ghost
 ```
 
-Exécuter la ligne produite sur la machine qui héberge Codex ou Claude. Les deux clients démarrent alors le même serveur MCP sur le Pi à travers SSH. Pour faire du Pi une machine de développement autonome, installer Codex CLI et Claude Code directement dessus, puis créer un dépôt de travail inscriptible :
+Exécuter la ligne produite sur la machine qui héberge Codex ou Claude. Les deux clients démarrent alors le même serveur MCP sur le Pi à travers SSH. Ce serveur expose l'écran et les outils `workspace_status`, `workspace_list`, `workspace_read`, `workspace_write`, `workspace_patch` et `workspace_exec`. Les fichiers sont limités au clone `~/Ghostboard`; les commandes de développement et de diagnostic sont lancées sans interpréteur implicite, sous le compte de bureau, avec une liste de programmes et un délai bornés. Le STOP bloque également les écritures et commandes distantes.
+
+Pour faire du Pi une machine de développement autonome, installer Codex CLI et Claude Code directement dessus, puis créer un dépôt de travail inscriptible :
 
 ```bash
 sudo bash install/ghostboard-pi5.sh --profile full --user "$USER" --codex --claude
