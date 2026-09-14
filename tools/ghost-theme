@@ -22,29 +22,38 @@ case "$cmd" in
     exec python3 "$RENDER" --check
     ;;
   apply)
+    [[ "$(id -u)" -eq 0 ]] || { echo 'Use sudo ghost-theme apply' >&2; exit 1; }
+    TARGET_USER="${SUDO_USER:-root}"
+    THEME_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    [[ -d "$THEME_HOME" ]] || exit 1
     # --check d'abord : un thème illisible ne doit pas pouvoir être installé.
     python3 "$RENDER" --check
-    python3 "$RENDER" --install --share-dir "$SHARE" --home "$HOME"
+    python3 "$RENDER" --install --share-dir "$SHARE" --home "$THEME_HOME"
 
     # Configuration XFCE : recopiée seulement si absente, pour ne pas écraser
     # les réglages faits à la main après l'installation.
-    xdg="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
-    mkdir -p "$xdg" "$HOME/.config/xfce4/panel" "$HOME/.local/share/applications"
+    xdg="$THEME_HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+    mkdir -p "$xdg" "$THEME_HOME/.config/xfce4/panel" "$THEME_HOME/.local/share/applications"
     for f in "$REPO"/desktop/config/*.xml; do
       [[ -f "$xdg/$(basename "$f")" ]] || install -m 0644 "$f" "$xdg/"
     done
-    [[ -f "$HOME/.config/xfce4/panel/whiskermenu-1.rc" ]] || \
-      install -m 0644 "$REPO/desktop/config/whiskermenu-1.rc" "$HOME/.config/xfce4/panel/"
-    install -m 0644 "$REPO"/desktop/launchers/*.desktop "$HOME/.local/share/applications/"
+    [[ -f "$THEME_HOME/.config/xfce4/panel/whiskermenu-1.rc" ]] || \
+      install -m 0644 "$REPO/desktop/config/whiskermenu-1.rc" "$THEME_HOME/.config/xfce4/panel/"
+    if [[ ! -f /var/lib/ghostboard/pi5-install.json ]]; then
+      install -m 0644 "$REPO"/desktop/launchers/*.desktop "$THEME_HOME/.local/share/applications/"
+    fi
     command -v update-desktop-database >/dev/null && \
-      update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+      update-desktop-database "$THEME_HOME/.local/share/applications" 2>/dev/null || true
     command -v gtk-update-icon-cache >/dev/null && \
-      gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+      gtk-update-icon-cache -f -t "$THEME_HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
     # L'animation de boot lit la même palette que le reste : on la resynchronise.
     if [[ -d "$SHARE/boot-animation" ]]; then
       install -m 0644 "$SHARE/palette.js" "$SHARE/boot-animation/palette.js"
     fi
+    chown -R "$TARGET_USER" "$THEME_HOME/.themes/GhostboardSpectral" \
+      "$THEME_HOME/.config/rofi" "$THEME_HOME/.config/xfce4" \
+      "$THEME_HOME/.local/share/applications" "$THEME_HOME/.local/share/icons" "$THEME_HOME/.Xresources"
     echo
     echo "Thème appliqué. Déconnecte-toi puis reconnecte-toi pour tout recharger,"
     echo "ou lance : ghost-theme reload"

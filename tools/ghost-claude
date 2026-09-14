@@ -12,6 +12,8 @@
 # ============================================================================
 set -uo pipefail
 SHARE="${GHOSTBOARD_SHARE:-/usr/share/ghostboard}"
+workspace="${GHOSTBOARD_DEV_REPO:-$HOME/Ghostboard}"
+[[ -d "$workspace/.git" ]] && cd "$workspace"
 [[ -f "$SHARE/palette.sh" ]] && . "$SHARE/palette.sh"
 
 c()   { [[ -t 1 ]] || { printf '%s' "$2"; return; }

@@ -1,0 +1,18 @@
+# METABEGIN
+# X-Env-Layer-Name: ghostboard-pi5
+# X-Env-Layer-Version: 0.3.0
+# X-Env-Layer-Category: application
+# X-Env-Layer-Desc: GHOSTBOARD Pi 5 desktop, tools and local computer use.
+# X-Env-Layer-Requires: trixie-minbase,device-user-admin
+# X-Env-Layer-RequiresProvider: rpi-device,systemd
+# METAEND
+---
+mmdebstrap:
+  customize-hooks:
+    - |-
+      set -eu
+      install -d -m 0755 "$1/opt/ghostboard-os"
+      cp -a "${@SRCROOT}/ghostboard-os/." "$1/opt/ghostboard-os/"
+      touch "$1/etc/ghostboard-image-build"
+      chroot "$1" env GHOSTBOARD_IMAGE_BUILD=1 /opt/ghostboard-os/install/pi5.py --profile full --user "$IGconf_device_user1"
+      rm -f "$1/etc/ghostboard-image-build"
