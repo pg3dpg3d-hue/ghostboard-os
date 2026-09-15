@@ -5,7 +5,7 @@ Validation locale : Windows, Python 3.12, Node.js. Aucun Pi 5, serveur X11 Linux
 | Vérification | Résultat |
 |---|---|
 | Python integration and backup tests | PASS |
-| Hand control — 49 synthetic-sequence tests | PASS |
+| Hand control — 84 synthetic-sequence tests | PASS |
 | MCP regressions with simulated X11 | PASS |
 | MCP protocol without X11 | PASS |
 | Native control center layout | PASS |
@@ -50,3 +50,70 @@ xvfb-run -a -s "-screen 0 800x480x24 -nolisten tcp" python3 tests/test-desktop-l
 ```
 
 Les performances du Pi n’ont pas été mesurées. La livraison comprend un installateur et une recette d’image reproductible ; l’image elle-même doit encore être construite et qualifiée sur Linux puis démarrée sur un Pi 5.
+
+## Audit Hand Control — 14 septembre 2026
+
+Corrections vérifiées sur Windows/Python 3.12 : 58 tests Hand Control, 28 tests
+Pi5, 14 régressions MCP et 30 contrôles MCP sans X11 ; disposition Tk,
+compileall et syntaxe Node passent. Aucun chiffre matériel n'a été mesuré.
+
+Le bilan initial surestimait plusieurs fonctions. La calibration lit désormais
+12 échantillons réels par coin, exige au moins 6 détections fiables et refuse
+les mouvements excessifs ; elle reste à essayer avec une caméra physique.
+Le benchmark n'injecte plus d'événements et ne modifie plus l'état du service.
+Les commandes de reprise ne sont plus rejouées, les erreurs caméra remontent,
+la capture est cadencée et la dernière image est libérée à l'arrêt.
+
+Limites encore ouvertes : le backend MediaPipe utilise toujours l'API historique
+`solutions.hands`, pas Tasks Hand Landmarker. La disponibilité Debian 13 ARM64
+et la recette de dépendances ne sont pas validées. Spatial dispose d'un émetteur
+UDP, pas d'un récepteur intégré vérifié. Le masquage du pointeur Presentation
+est un événement, pas une implémentation X11. Les FPS caméra et inférence sont
+encore calculés depuis les mêmes observations ; ils ne constituent pas deux
+mesures indépendantes. STOP est contrôlé avant chaque commande, mais aucune
+borne de latence d'arrêt n'est garantie pendant un appel natif bloquant.
+Un clic générique ne sait pas distinguer une validation sensible : la garantie
+absolue annoncée précédemment n'est pas implémentée. Ne pas utiliser ce module
+pour confirmer des achats, suppressions, messages ou changements de sécurité.
+
+## Suite Hand Control — 14 septembre 2026 (extensions)
+
+Vérifié sur Windows/Python 3.12 : 84 tests Hand Control, 28 tests Pi5, 14
+régressions MCP, 30 contrôles MCP sans X11, disposition Tk, compileall (dont les
+nouveaux modules et `install/hand-deps.py`) et syntaxe Node. Aucun chiffre
+matériel mesuré. Fonctions reprises depuis l'état réel du travail précédent :
+
+- **Backend MediaPipe Tasks** (mode VIDEO, modèle `.task` local, aucun
+  téléchargement au runtime) confirmé ; `make_backend` ne bascule plus
+  silencieusement sur le simulé (test mis à jour). Le benchmark retombe
+  explicitement sur le pipeline simulé quand le modèle est absent (régression
+  corrigée + test).
+- **`install/hand-deps.py`** ajouté (était référencé mais manquant) :
+  provisionnement reproductible venv + modèle épinglé, empreinte SHA-256 affichée,
+  échec explicite ; `--dry-run` testé.
+- **Correction de perspective** : `Calibration` calcule une homographie
+  quadrilatère → écran (repli rectangle si dégénéré). Tests : coins, centre,
+  bords, quadrilatère non rectangulaire, miroir, cas dégénéré.
+- **Main pilote** : continuité par handedness + proximité, temporisation avant
+  transfert, `preferred_hand`. Tests : continuité malgré une meilleure confiance
+  adverse, transfert après délai, perte temporaire, préférence forcée.
+- **Zoom à deux mains** : référence au début du geste, bande morte, référence
+  avancée (pas d'accumulation), nettoyage à la disparition d'une main. Tests :
+  zoom in/out, pas de zoom à l'apparition, bande morte, fin de geste, mode
+  Pointer non concerné.
+- **Spatial** : rotation (horizontal) / inclinaison (vertical) distinctes,
+  `select`, `explode` ; schéma d'événement réconcilié avec `hand_events`
+  (validé) et pont authentifié `hand_events.Bridge`/`Channel` câblé dans
+  `run_engine`. Tests : rotate/tilt, explode, validation du schéma.
+- **Masquage curseur Presentation** réel via XFixes (`hand_desktop.Desktop`).
+- **Clic externe soumis à validation clavier F8** (`Desktop.authorized()`,
+  XQueryKeymap) ; sans autorisation vérifiable, le clic système n'est pas injecté.
+  Tests : bloqué sans F8, autorisé avec F8, absence d'autorisateur = blocage,
+  Spatial non concerné, déplacement du pointeur libre.
+
+Limites encore ouvertes (à valider sur matériel) : voir la section « Limites » de
+`INSTALLATION-PI5-FR.md`. Le pipeline isolé multiprocessus (`hand_pipeline.py`)
+et le pont Spatial sont fournis et testables unitairement, mais leur intégration
+bout-en-bout avec une caméra réelle et l'application Spatial reste à qualifier sur
+un Pi 5. La garantie absolue sur les clics sensibles n'existe toujours pas : la
+validation F8 réduit le risque mais ne connaît pas la sémantique du bouton pointé.

@@ -185,22 +185,34 @@ une seule main est suivie au départ pour limiter la latence.
 
 ### MediaPipe (moteur de détection)
 
-MediaPipe Hand Landmarker est le premier moteur. **Aucune roue apt épinglée
-fiable n'existe pour Debian 13 ARM64** ; il n'est donc pas installé globalement.
-Parcours reproductible, dans un environnement dédié :
+MediaPipe **Hand Landmarker (API Tasks, mode VIDEO)** est le premier moteur. Le
+modèle `.task` est local : **rien n'est téléchargé au runtime**. **Aucune roue
+apt épinglée fiable n'existe pour Debian 13 ARM64** ; MediaPipe s'installe donc
+dans un venv dédié, et le modèle est provisionné une seule fois, par un script
+reproductible :
 
 ```bash
-python3 -m venv ~/.local/share/ghostboard/hand-venv
-~/.local/share/ghostboard/hand-venv/bin/pip install --upgrade pip
-~/.local/share/ghostboard/hand-venv/bin/pip install mediapipe opencv-python
-# Lancer le moteur avec ce Python :
+# Plan sans rien écrire :
+python3 install/hand-deps.py --dry-run
+# venv épinglé + modèle Hand Landmarker officiel (empreinte affichée) :
+python3 install/hand-deps.py
+# Vérification stricte de l'empreinte (recommandé après un premier passage) :
+python3 install/hand-deps.py --sha256 <empreinte-affichée>
+# Lancer le moteur avec le Python du venv :
 ~/.local/share/ghostboard/hand-venv/bin/python /usr/local/bin/ghost-hand start
 ```
 
-Si MediaPipe est indisponible, `ghost-hand doctor` le signale clairement et le
-module bascule sur le backend **simulé** (utile pour les tests) sans masquer
-l'échec. **L'accélération Hailo n'est pas prise en charge** tant qu'un modèle
-compatible n'a pas été réellement intégré et testé sur le matériel.
+Le script télécharge le modèle depuis le dépôt MediaPipe officiel (URL épinglée),
+calcule et affiche son SHA-256, et échoue explicitement si l'installation n'est
+pas possible sur la plateforme. Les versions (`--mediapipe-version`,
+`--numpy-version`) sont épinglées mais **doivent être confirmées sur un vrai
+Pi 5** ; le chemin du modèle est la clé de configuration `model_path`.
+
+Si MediaPipe ou le modèle sont indisponibles, `ghost-hand doctor` le signale et
+le module reste sur le backend **simulé** (utile pour les tests) sans masquer
+l'échec — `make_backend` ne bascule jamais silencieusement. **L'accélération
+Hailo n'est pas prise en charge** tant qu'un modèle compatible n'a pas été
+réellement intégré et testé sur le matériel.
 
 ### Utilisation
 
@@ -225,7 +237,28 @@ gauche ; pincement pouce-majeur = clic droit ; double pincement = double-clic ;
 pincement maintenu = glisser-déposer ; deux doigts = défilement ; paume ouverte
 = pause immédiate ; balayage horizontal = changement de bureau.
 **Presentation** : balayage = diapositive suivante/précédente, index = pointeur,
-paume = masquer/afficher le pointeur. **Spatial** : voir ci-dessous.
+paume = masquer/afficher le pointeur (curseur réellement masqué via XFixes).
+**Spatial** : voir ci-dessous.
+
+**Deux mains.** Si deux mains sont visibles, le système conserve la **main
+pilote** courante (par handedness + proximité de la position précédente) et ne
+bascule pas sur l'autre pour une confiance momentanément meilleure ; à la
+disparition de la main pilote, il attend `driver_switch_ms` avant tout transfert.
+`preferred_hand` (`auto`/`Left`/`Right`) fixe la préférence initiale.
+
+**Clics dans les applications externes.** Le suivi de main ne connaît pas la
+conséquence du bouton pointé (achat, suppression, envoi…). Un **clic système est
+donc soumis à une validation clavier : maintenir F8** pendant le geste de clic
+pour l'autoriser. Sans autorisation vérifiable, le pointeur se positionne mais le
+clic n'est pas injecté (`require_click_auth`, activé par défaut). Ne désactivez
+pas cette sécurité « pour la fluidité ». Les commandes Spatial passent par le
+canal local interne et ne sont pas concernées.
+
+**Calibration + perspective.** `ghost-hand calibrate` mesure réellement les
+quatre coins (12 échantillons par coin, ≥ 6 valides, rejet des mouvements
+excessifs) puis calcule une **homographie** quadrilatère → écran : la zone
+calibrée n'a pas à être un rectangle parallèle à la caméra. Repli sur le
+rectangle englobant seulement si les coins sont dégénérés.
 
 ### Sécurité et arrêt
 
@@ -253,12 +286,20 @@ systemctl --user disable ghostboard-hand.service
 ### GHOSTBOARD Spatial et Point & Command
 
 En mode `spatial`, le contrôle gestuel n'injecte rien dans le bureau : il émet des
-**messages JSON validés sur un canal local strictement limité à `127.0.0.1`**
-(UDP, activé par `spatial_channel_port` dans la configuration). C'est aussi
-l'interface **Point & Command** : chaque événement contient horodatage monotone,
-coordonnées normalisées et écran, main gauche/droite, geste, confiance et mode —
-**jamais d'image**. Elle prépare la combinaison future d'un point de la main et
-d'une commande vocale.
+**messages JSON validés sur un pont local authentifié, strictement limité à
+`127.0.0.1`** (`runtime/hand_events.py` : jeton par session écrit en `0600`,
+datagrammes UDP rejetés au-delà de 0,5 s, dédoublonnage par horodatage,
+respect du STOP). Les commandes sont bornées à une liste blanche : `point`,
+`select`, `rotate_left`/`rotate_right` (déplacement horizontal), `tilt_up`/
+`tilt_down` (déplacement vertical), `zoom_in`/`zoom_out` (distance pouce-index ou
+écartement des deux mains), `explode` (geste d'écartement), `release`, `pause`.
+C'est aussi l'interface **Point & Command** : chaque événement contient
+horodatage monotone, coordonnées normalisées et écran, main gauche/droite, geste,
+confiance et mode — **jamais d'image**. Elle prépare la combinaison future d'un
+point de la main et d'une commande vocale. Le récepteur de référence est fourni
+(`hand_events.Bridge`) ; l'application Spatial le consommera via un petit pont
+local (la CSP `connect-src 'self'` impose que ce pont vive sur l'origine de
+Spatial).
 
 Un agent distant peut lire l'état via l'outil MCP **`hand_status`** (lecture
 seule). Aucun outil MCP ne permet d'activer la caméra ni le contrôle gestuel :
@@ -278,11 +319,17 @@ inversion horizontale, calibration…) et se modifient **sans changer le code**.
 
 La lumière, l'occlusion des doigts et la qualité de la caméra bornent ce que tout
 suivi visuel peut faire. **Tests matériels restant à réaliser sur un vrai Pi 5** :
-capture Picamera2/V4L2 réelle, latence et FPS avec MediaPipe sur ARM64, injection
-xdotool sur la dalle, comportement du service systemd utilisateur en session
-graphique, et calibration en direct. Les chiffres de `ghost-hand benchmark` sont
-des mesures réelles du pipeline configuré ; hors Pi/caméra ils mesurent le
-pipeline **simulé** et le rapport l'indique.
+disponibilité et pin exact de MediaPipe Tasks sur ARM64 + téléchargement du
+modèle par `install/hand-deps.py` ; capture Picamera2/V4L2 réelle ; latence et
+FPS réels ; injection xdotool sur la dalle ; **autorisation clavier F8** sur un
+vrai clavier (XQueryKeymap) et masquage curseur XFixes ; **précision de
+l'homographie** de calibration en conditions réelles ; persistance de la main
+pilote et zoom à deux mains avec un vrai détecteur ; pont Spatial
+(`hand_events.Bridge`) consommé par l'application ; service systemd utilisateur
+en session graphique. Les chiffres de `ghost-hand benchmark` sont des mesures
+réelles du pipeline configuré ; hors Pi/caméra ils mesurent le pipeline
+**simulé** et le rapport l'indique. Les FPS capture et inférence rapportés
+dérivent des mêmes observations : ce ne sont pas deux mesures indépendantes.
 
 ## Contrôle par Internet, Codex et Claude
 
@@ -388,3 +435,14 @@ La télémétrie batterie n'apparaît que si le matériel l'expose au noyau. Une
 
 Base : `pg3dpg3d-hue/ghostboard-os`, commit `f9daf5527ce077ef83f0f6146daaf33159f79702`.
 Les 157 fichiers de départ ont été récupérés via GitHub et vérifiés par leur empreinte Git. Les modifications de cette livraison sont locales et accompagnées d'un patch. Elles n'ont pas été publiées sur le dépôt distant.
+
+### Correctifs de robustesse Hand Control
+
+La calibration mesure maintenant la position réelle de l'index à chaque appui
+sur Espace : maintenir le doigt immobile pendant les 12 lectures. Une détection
+insuffisante ou instable est refusée. Échap annule sans enregistrer les coins
+partiels. Le backend simulé ne peut pas calibrer une caméra réelle.
+Le benchmark fonctionne sans injection et préserve l'état du service.
+Consulter la section « Audit Hand Control » de VALIDATION.md : les anciennes
+annonces de prise en charge ne valent pas validation matérielle ou intégration
+complète de Spatial, Presentation et MediaPipe Tasks.

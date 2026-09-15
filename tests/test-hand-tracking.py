@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,13 +20,30 @@ sys.path.insert(0, str(ROOT / 'runtime'))
 import hand_tracking as h
 
 
-def engine(mode='pointer', state=h.S_ACTIVE, stop='no_such_stop', fail_on=None, config=None):
+class FakeDesktop:
+    """Autorisation clavier + visibilité curseur simulées (pas d'X11)."""
+
+    def __init__(self, authorized=True):
+        self._authorized = authorized
+        self.visible_calls = []
+
+    def authorized(self):
+        return self._authorized
+
+    def visible(self, visible):
+        self.visible_calls.append(visible)
+
+
+def engine(mode='pointer', state=h.S_ACTIVE, stop='no_such_stop', fail_on=None,
+           config=None, authorized=True, desktop=None):
     cfg = config or h.load_config('does-not-exist.json')
     cfg['mode'] = mode
     out = h.RecordingActionSink(fail_on=fail_on)
     ch = h.RecordingEventChannel()
+    if desktop is None:
+        desktop = FakeDesktop(authorized)
     return h.HandControlEngine(cfg, output=out, channel=ch, screen_size=(800, 480),
-                              stop_file=stop, initial_state=state)
+                              stop_file=stop, initial_state=state, desktop=desktop)
 
 
 def feed(eng, samples, t0=0.0, dt=0.05):
@@ -82,6 +100,61 @@ class ConfigTests(unittest.TestCase):
             path.write_text('{"nonsense": 1}')
             with self.assertRaises(ValueError):
                 h.load_config(path)
+
+
+class CalibrationTests(unittest.TestCase):
+    def _calib(self, corners, flip=False):
+        c = {'enabled': True, 'top_left': corners[0], 'top_right': corners[1],
+             'bottom_right': corners[2], 'bottom_left': corners[3]}
+        return h.Calibration(c, flip)
+
+    def test_perspective_quad_maps_corners_to_screen_extremes(self):
+        # Quadrilatère non rectangulaire (perspective) : coins -> carré unité.
+        corners = [(0.20, 0.18), (0.82, 0.24), (0.88, 0.83), (0.14, 0.79)]
+        cal = self._calib(corners)
+        expected = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        for (cx, cy), (ex, ey) in zip(corners, expected):
+            mx, my = cal.map(cx, cy)
+            self.assertAlmostEqual(mx, ex, places=3)
+            self.assertAlmostEqual(my, ey, places=3)
+
+    def test_center_of_quad_maps_near_center(self):
+        corners = [(0.20, 0.18), (0.82, 0.24), (0.88, 0.83), (0.14, 0.79)]
+        cal = self._calib(corners)
+        cx = sum(c[0] for c in corners) / 4
+        cy = sum(c[1] for c in corners) / 4
+        mx, my = cal.map(cx, cy)
+        # Le centre du quadrilatère tombe près du centre de l'écran.
+        self.assertLess(abs(mx - 0.5), 0.12)
+        self.assertLess(abs(my - 0.5), 0.12)
+
+    def test_edge_midpoints_are_monotonic(self):
+        corners = [(0.20, 0.18), (0.82, 0.24), (0.88, 0.83), (0.14, 0.79)]
+        cal = self._calib(corners)
+        top_mid = cal.map((0.20 + 0.82) / 2, (0.18 + 0.24) / 2)
+        bottom_mid = cal.map((0.14 + 0.88) / 2, (0.79 + 0.83) / 2)
+        self.assertLess(top_mid[1], 0.5)     # bord haut -> moitié supérieure
+        self.assertGreater(bottom_mid[1], 0.5)  # bord bas -> moitié inférieure
+
+    def test_flip_mirrors_horizontally(self):
+        corners = [(0.20, 0.18), (0.82, 0.24), (0.88, 0.83), (0.14, 0.79)]
+        cal = self._calib(corners, flip=True)
+        # TL calibré -> après miroir, bord droit de l'écran.
+        mx, _ = cal.map(*corners[0])
+        self.assertAlmostEqual(mx, 1.0, places=3)
+
+    def test_degenerate_corners_fall_back_to_bounding_box(self):
+        # Coins colinéaires : homographie impossible -> repli rectangle.
+        cal = self._calib([(0.1, 0.1), (0.2, 0.2), (0.3, 0.3), (0.4, 0.4)])
+        self.assertIsNone(cal.homography)
+        mx, my = cal.map(0.25, 0.25)  # ne lève pas, reste borné
+        self.assertTrue(0.0 <= mx <= 1.0 and 0.0 <= my <= 1.0)
+
+    def test_disabled_calibration_is_identity(self):
+        c = dict(h.DEFAULT_CONFIG['calibration'])
+        c['enabled'] = False
+        cal = h.Calibration(c, flip_horizontal=False)
+        self.assertEqual(cal.map(0.37, 0.62), (0.37, 0.62))
 
 
 class PoseTests(unittest.TestCase):
@@ -201,6 +274,90 @@ class GestureActionTests(unittest.TestCase):
         self.assertGreaterEqual(len([a for a in eng.output.actions if a['action'] == 'move']), 1)
 
 
+class DriverHandTests(unittest.TestCase):
+    def _hands(self, rx, lx, rconf=0.95, lconf=0.95):
+        return [h.pointing_hand(rx, 0.5, handedness='Right', confidence=rconf),
+                h.pointing_hand(lx, 0.5, handedness='Left', confidence=lconf)]
+
+    def test_continuity_ignores_better_confidence_on_other_hand(self):
+        eng = engine()
+        first = eng.select_driver(self._hands(0.4, 0.6, rconf=0.9, lconf=0.7), 0.0)
+        self.assertEqual(first.handedness, 'Right')
+        # La main gauche devient bien plus confiante, la droite bouge à peine :
+        # le pilote NE doit PAS sauter sur la gauche.
+        second = eng.select_driver(self._hands(0.42, 0.6, rconf=0.4, lconf=0.99), 0.05)
+        self.assertEqual(second.handedness, 'Right')
+
+    def test_switch_only_after_grace(self):
+        eng = engine(config=_with(driver_switch_ms=300))
+        eng.select_driver([h.pointing_hand(0.4, 0.5, handedness='Right')], 0.0)
+        left = [h.pointing_hand(0.6, 0.5, handedness='Left')]
+        # Main pilote disparue : dans le délai de grâce -> pas de transfert.
+        self.assertIsNone(eng.select_driver(left, 0.1))
+        # Après le délai -> transfert au contrôle de l'autre main.
+        self.assertEqual(eng.select_driver(left, 0.5).handedness, 'Left')
+
+    def test_preferred_hand_forces_initial_choice(self):
+        eng = engine(config=_with(preferred_hand='Left'))
+        chosen = eng.select_driver(self._hands(0.4, 0.6, rconf=0.99, lconf=0.6), 0.0)
+        self.assertEqual(chosen.handedness, 'Left')
+
+    def test_temporary_loss_then_same_hand_resumes(self):
+        eng = engine(config=_with(driver_switch_ms=400))
+        r = [h.pointing_hand(0.4, 0.5, handedness='Right')]
+        eng.select_driver(r, 0.0)
+        self.assertIsNone(eng.select_driver([], 0.1))          # perte 1 frame
+        again = eng.select_driver([h.pointing_hand(0.41, 0.5, handedness='Right')], 0.15)
+        self.assertEqual(again.handedness, 'Right')            # même main reprend
+
+
+class BimanualZoomTests(unittest.TestCase):
+    def _two(self, dx, conf=0.95):
+        return [h.pointing_hand(0.5 - dx, 0.5, handedness='Right', confidence=conf),
+                h.pointing_hand(0.5 + dx, 0.5, handedness='Left', confidence=conf)]
+
+    def _commands(self, eng):
+        return [e.get('command') for e in eng.channel.events if e.get('command')]
+
+    def test_appearance_does_not_zoom_immediately(self):
+        eng = engine(mode='spatial')
+        eng.process_sample(self._two(0.10), 0.0)  # référence établie
+        self.assertEqual(self._commands(eng), [])
+
+    def test_two_hand_zoom_in_and_out(self):
+        eng = engine(mode='spatial')
+        eng.process_sample(self._two(0.10), 0.0)   # ref
+        eng.process_sample(self._two(0.25), 0.05)  # écartement -> zoom_in
+        self.assertIn('zoom_in', self._commands(eng))
+        eng.process_sample(self._two(0.08), 0.10)  # rapprochement -> zoom_out
+        self.assertIn('zoom_out', self._commands(eng))
+
+    def test_deadband_suppresses_jitter(self):
+        eng = engine(mode='spatial', config=_with(mode='spatial', bimanual_zoom_deadband=0.05))
+        eng.process_sample(self._two(0.10), 0.0)
+        eng.process_sample(self._two(0.105), 0.05)  # variation < bande morte
+        self.assertEqual(self._commands(eng), [])
+
+    def test_hand_disappearance_ends_gesture(self):
+        eng = engine(mode='spatial')
+        eng.process_sample(self._two(0.10), 0.0)
+        eng.process_sample(self._two(0.25), 0.05)   # zoom_in
+        zooms = lambda: [c for c in self._commands(eng) if c.startswith('zoom_')]
+        n = len(zooms())
+        # Une main disparaît : l'état de zoom est nettoyé (ref remise à None).
+        eng.process_sample([h.pointing_hand(0.5, 0.5, handedness='Right')], 0.10)
+        self.assertIsNone(eng._bimanual_ref)
+        # Réapparition très écartée : PAS de zoom géant, une nouvelle ref d'abord.
+        eng.process_sample(self._two(0.40), 0.15)
+        self.assertEqual(len(zooms()), n)
+
+    def test_pointer_mode_two_hands_do_not_zoom(self):
+        eng = engine(mode='pointer')
+        eng.process_sample(self._two(0.10), 0.0)
+        eng.process_sample(self._two(0.30), 0.05)
+        self.assertNotIn('zoom_in', self._commands(eng))
+
+
 class TemporisationTests(unittest.TestCase):
     def test_validation_duration_blocks_single_frame_palm(self):
         eng = engine(config=_with(min_validation_frames=5))
@@ -224,6 +381,54 @@ class TemporisationTests(unittest.TestCase):
         feed(eng, [h.pointing_hand(0.2 + 0.09 * i, 0.5) for i in range(6)], t0=0.20, dt=0.03)
         desk = [a for a in eng.output.actions if a['action'] == 'desktop']
         self.assertEqual(len(desk), 1)
+
+
+class ExternalClickAuthTests(unittest.TestCase):
+    def test_click_blocked_without_keyboard_authorization(self):
+        eng = engine(authorized=False)
+        t = feed(eng, [h.pinch_hand(0.5, 0.5), h.pointing_hand(0.5, 0.5)])
+        feed(eng, [h.pointing_hand(0.5, 0.5)], t0=t + 0.6)
+        # Aucun clic système injecté sans F8 maintenu.
+        self.assertEqual([a for a in eng.output.actions if a['action'] == 'click'], [])
+        commands = [e.get('command') for e in eng.channel.events if e.get('command')]
+        self.assertIn('click_needs_key', commands)
+
+    def test_click_allowed_with_keyboard_authorization(self):
+        eng = engine(authorized=True)
+        t = feed(eng, [h.pinch_hand(0.5, 0.5), h.pointing_hand(0.5, 0.5)])
+        feed(eng, [h.pointing_hand(0.5, 0.5)], t0=t + 0.6)
+        self.assertEqual([a for a in eng.output.actions if a['action'] == 'click'],
+                         [{'action': 'click', 'button': 'left', 'count': 1}])
+
+    def test_missing_authorizer_blocks_by_default(self):
+        # require_click_auth mais aucun autorisateur -> on s'abstient (sûr).
+        cfg = h.load_config('none')
+        eng = h.HandControlEngine(cfg, output=h.RecordingActionSink(),
+                                  channel=h.RecordingEventChannel(), screen_size=(800, 480),
+                                  stop_file='no_stop', initial_state=h.S_ACTIVE, desktop=None)
+        t = feed(eng, [h.pinch_hand(0.5, 0.5), h.pointing_hand(0.5, 0.5)])
+        feed(eng, [h.pointing_hand(0.5, 0.5)], t0=t + 0.6)
+        self.assertEqual([a for a in eng.output.actions if a['action'] == 'click'], [])
+
+    def test_pointer_movement_does_not_require_authorization(self):
+        eng = engine(authorized=False)
+        feed(eng, [h.pointing_hand(0.3, 0.5), h.pointing_hand(0.7, 0.5)])
+        # Le pointeur peut bouger (préparer l'intention) sans autorisation.
+        self.assertTrue([a for a in eng.output.actions if a['action'] == 'move'])
+
+    def test_spatial_commands_are_not_gated(self):
+        # Spatial passe par le canal local (interne), pas de clic système : non soumis à F8.
+        eng = engine(mode='spatial', authorized=False)
+        t = feed(eng, [h.pinch_hand(0.5, 0.5), h.pointing_hand(0.5, 0.5)])
+        feed(eng, [h.pointing_hand(0.5, 0.5)], t0=t + 0.6)
+        commands = [e.get('command') for e in eng.channel.events if e.get('command')]
+        self.assertIn('select', commands)
+
+    def test_presentation_toggle_drives_real_cursor(self):
+        desk = FakeDesktop(authorized=True)
+        eng = engine(mode='presentation', desktop=desk)
+        feed(eng, [h.open_palm_hand(0.5, 0.5) for _ in range(6)])
+        self.assertIn(False, desk.visible_calls)  # curseur masqué via XFixes
 
 
 class RobustnessTests(unittest.TestCase):
@@ -311,6 +516,33 @@ class ModeTests(unittest.TestCase):
         commands = [e.get('command') for e in eng.channel.events if e.get('command')]
         self.assertIn('select', commands)
 
+    def test_spatial_horizontal_drag_rotates_vertical_tilts(self):
+        import hand_events
+        # Pincement maintenu (drag) qui glisse horizontalement -> rotation.
+        eng = engine(mode='spatial')
+        t = 0.0
+        for x in (0.50, 0.50, 0.56, 0.62, 0.68):  # tenu puis glissé à droite
+            eng.process_sample(h.pinch_hand(x, 0.5), t); t += 0.05
+        cmds = [e.get('command') for e in eng.channel.events if e.get('command')]
+        self.assertTrue(any(c in ('rotate_left', 'rotate_right') for c in cmds))
+        # Glissement vertical -> inclinaison (tilt).
+        eng2 = engine(mode='spatial')
+        t = 0.0
+        for y in (0.50, 0.50, 0.56, 0.62, 0.68):
+            eng2.process_sample(h.pinch_hand(0.5, y), t); t += 0.05
+        cmds2 = [e.get('command') for e in eng2.channel.events if e.get('command')]
+        self.assertTrue(any(c in ('tilt_up', 'tilt_down') for c in cmds2))
+        # Toute commande Spatial émise est valide pour le pont hand_events.
+        for e in eng.channel.events + eng2.channel.events:
+            if e.get('mode') == 'spatial' and e.get('command'):
+                hand_events.validate_event(e)
+
+    def test_spatial_spread_explodes(self):
+        eng = engine(mode='spatial')
+        feed(eng, [h.open_palm_hand(0.5, 0.5, spread=True) for _ in range(6)])
+        cmds = [e.get('command') for e in eng.channel.events if e.get('command')]
+        self.assertIn('explode', cmds)
+
 
 class PointAndCommandTests(unittest.TestCase):
     def test_event_has_required_fields_and_no_image(self):
@@ -318,7 +550,7 @@ class PointAndCommandTests(unittest.TestCase):
         feed(eng, [h.pointing_hand(0.3, 0.5), h.pointing_hand(0.7, 0.5)])
         self.assertTrue(eng.channel.events)
         ev = eng.channel.events[-1]
-        for key in ('timestamp_monotonic', 'normalized', 'screen', 'handedness',
+        for key in ('timestamp', 'normalized', 'screen', 'handedness',
                     'gesture', 'confidence', 'mode'):
             self.assertIn(key, ev)
         # Aucune donnée d'image dans l'événement.
@@ -372,7 +604,7 @@ class OutputSafetyTests(unittest.TestCase):
              patch.object(h.subprocess, 'run', side_effect=lambda argv, *a, **k: calls.append(argv) or type('R', (), {'returncode': 0})()):
             sink = h.XdotoolActionSink(display=':0')
             sink.move(10.7, 20.2)
-        self.assertEqual(calls[0], ['xdotool', 'mousemove', '--sync', '10', '20'])
+        self.assertEqual(calls[0], ['xdotool', 'mousemove', '10', '20'])
 
     def test_unknown_button_rejected(self):
         with patch.object(h.shutil, 'which', return_value='/usr/bin/xdotool'), \
@@ -394,13 +626,22 @@ class BackendTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             h.HailoBackend()
 
-    def test_auto_backend_falls_back_to_simulated_without_mediapipe(self):
+    def test_simulated_backend_is_explicit(self):
+        # make_backend ne bascule PAS silencieusement sur le simulé : il faut le
+        # demander explicitement (durcissement Codex). 'auto' exige MediaPipe.
+        cfg = h.load_config('none')
+        cfg['backend'] = 'simulated'
+        self.assertIsInstance(h.make_backend(cfg), h.SimulatedBackend)
+
+    def test_auto_backend_requires_mediapipe_model(self):
         import importlib.util
         if importlib.util.find_spec('mediapipe') is not None:
-            self.skipTest('MediaPipe installed; auto would pick it.')
+            self.skipTest('MediaPipe installed; auto would build a real backend.')
         cfg = h.load_config('none')
         cfg['backend'] = 'auto'
-        self.assertIsInstance(h.make_backend(cfg), h.SimulatedBackend)
+        # Sans MediaPipe ni modèle local, l'échec est explicite (pas de repli muet).
+        with self.assertRaises(RuntimeError):
+            h.make_backend(cfg)
 
 
 class PerfTests(unittest.TestCase):
@@ -439,6 +680,38 @@ class PerfTests(unittest.TestCase):
             self.assertEqual(report['backend'], 'simulated')
             self.assertFalse(report['real_camera'])
             self.assertGreaterEqual(report['frames'], 1)
+
+    def test_benchmark_auto_backend_without_model_does_not_crash(self):
+        # make_backend('auto') lève sans modèle : le benchmark doit retomber sur
+        # le pipeline simulé plutôt que de planter (régression).
+        with tempfile.TemporaryDirectory() as folder:
+            cfg = h.load_config('none')
+            cfg['backend'] = 'auto'
+            cfg['camera'] = 'simulated'
+            cfg['model_path'] = str(Path(folder) / 'absent.task')
+            path = Path(folder) / 'hand-tracking.json'
+            h.save_config(cfg, path)
+            state = Path(folder) / 'hand-control.json'
+            out = io.StringIO()
+            with patch.object(h, 'CONFIG_FILE', path), patch.object(h, 'STATE_FILE', state), \
+                 patch.object(h, '_query_screen_size', return_value=(800, 480)), \
+                 contextlib.redirect_stdout(out):
+                rc = h.cmd_benchmark(0.3)
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(out.getvalue())['backend'], 'simulated')
+
+
+class HandDepsTests(unittest.TestCase):
+    def test_dry_run_is_read_only_and_valid(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / 'install/hand-deps.py'), '--dry-run'],
+                cwd=folder, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(list(Path(folder).iterdir()), [])  # rien écrit
+            plan = json.loads(result.stdout)
+            self.assertTrue(plan['model_url'].startswith('https://'))
+            self.assertIn('mediapipe', plan)
 
 
 class LatestFrameBufferTests(unittest.TestCase):
@@ -492,6 +765,81 @@ def _with(**overrides):
     cfg = h.load_config('none')
     cfg.update(overrides)
     return h.validate_config(cfg)
+
+
+class HardeningTests(unittest.TestCase):
+    def test_resume_command_is_not_replayed_after_stop(self):
+        eng = engine(state=h.S_PAUSED)
+        command = {'desired': 'active', 'ts': 1}
+        h.apply_control(eng, command)
+        eng._release_and(h.S_STOPPED)
+        h.apply_control(eng, command)
+        self.assertEqual(eng.state, h.S_STOPPED)
+        h.apply_control(eng, {'desired': 'active', 'ts': 2})
+        self.assertEqual(eng.state, h.S_ARMED)
+
+    def test_nonfinite_samples_rejected(self):
+        for value in (float('nan'), float('inf')):
+            points = [(0.5, 0.5, 0)] * 21
+            points[8] = (value, 0.5, 0)
+            with self.assertRaises(ValueError):
+                h.HandSample(points)
+            with self.assertRaises(ValueError):
+                h.pointing_hand(confidence=value)
+
+    def test_fractional_frame_configuration_rejected(self):
+        cfg = h.load_config('missing')
+        cfg['analysis_width'] = 640.5
+        with self.assertRaises(ValueError):
+            h.validate_config(cfg)
+
+    def test_hand_loss_restarts_arming_hold(self):
+        eng = engine(state=h.S_ARMED)
+        feed(eng, [h.pointing_hand()] * 10)
+        eng.process_sample(None, 0.6)
+        eng.process_sample(h.pointing_hand(), 1.0)
+        self.assertEqual(eng.state, h.S_ARMED)
+
+    def test_disabled_status_is_not_running(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'state'
+            h.write_state({'state': h.S_DISABLED, 'running': False}, path)
+            self.assertFalse(h.read_state(path)['running'])
+
+    def test_observation_never_creates_desktop_output_or_writes_state(self):
+        cfg = h.load_config('missing')
+        camera = h.SimulatedCamera([h.pointing_hand()] * 3)
+        with patch.object(h, 'XdotoolActionSink', side_effect=AssertionError('desktop')), \
+             patch.object(h, 'write_state', side_effect=AssertionError('state')), \
+             patch.object(h, '_query_screen_size', return_value=(800, 480)):
+            h.run_engine(cfg, camera, h.SimulatedBackend(), observe_only=True)
+
+    def test_camera_exception_propagates_and_buffer_clears(self):
+        from unittest.mock import Mock
+        source = Mock()
+        source.read.side_effect = RuntimeError('disconnected')
+        camera = h.ThreadedCamera(source)
+        camera.start()
+        camera._thread.join(1)
+        with self.assertRaisesRegex(RuntimeError, 'disconnected'):
+            camera.read_latest()
+        camera._buf.put(object())
+        camera.stop()
+        self.assertIsNone(camera._buf.get()[0])
+        source.stop.assert_called_once()
+
+    def test_calibration_uses_measured_landmarks_and_closes_resources(self):
+        from unittest.mock import Mock
+        camera, backend = Mock(), Mock()
+        backend.detect.return_value = [h.pointing_hand(0.32, 0.41)]
+        with patch.object(h, 'make_camera', return_value=camera), \
+             patch.object(h, 'make_backend', return_value=backend), \
+             patch.object(h.time, 'sleep'):
+            point = h.measure_calibration_point(h.load_config('missing'))
+        self.assertAlmostEqual(point[0], 0.32)
+        self.assertAlmostEqual(point[1], 0.41)
+        camera.stop.assert_called_once()
+        backend.close.assert_called_once()
 
 
 if __name__ == '__main__':

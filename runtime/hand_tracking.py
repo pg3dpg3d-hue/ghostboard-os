@@ -21,6 +21,9 @@ respect impératif du fichier STOP partagé de Ghostboard vivent dans l'engine.
 from __future__ import annotations
 
 import argparse
+import signal
+import secrets
+from contextlib import ExitStack
 import datetime as dt
 import json
 import math
@@ -51,7 +54,7 @@ CONFIG_FILE = CONFIG_DIR / 'hand-tracking.json'
 STATE_FILE = STATE_DIR / 'hand-control.json'
 CONTROL_FILE = STATE_DIR / 'hand-control.cmd'
 
-VERSION = '0.1.0-hand'
+VERSION = '0.2.0-hand'
 
 # ---------------------------------------------------------------------------
 #  Points de la main (contrat MediaPipe : 21 points normalisés par main)
@@ -107,6 +110,16 @@ CAMERAS = ('auto', 'picamera2', 'v4l2', 'simulated')
 # ===========================================================================
 DEFAULT_CONFIG = {
     'backend': 'auto',
+    'model_path': str(Path.home() / '.local/share/ghostboard/models/hand_landmarker.task'),
+    'preferred_hand': 'auto',
+    'require_click_auth': True,
+    'driver_switch_ms': 600,
+    'driver_proximity': 0.25,
+    'bimanual_zoom_deadband': 0.02,
+    'sample_timeout_ms': 500,
+    'worker_timeout_ms': 15000,
+    'click_min_ms': 60,
+    'bimanual_zoom_gain': 2.0,
     'camera': 'auto',
     'camera_device': '/dev/video0',
     'analysis_width': 640,
@@ -148,6 +161,13 @@ DEFAULT_CONFIG = {
 
 # Bornes de validation : (min, max) ; les clés absentes sont refusées.
 _NUMERIC_BOUNDS = {
+    'driver_switch_ms': (0, 5000),
+    'driver_proximity': (0.02, 1.0),
+    'bimanual_zoom_deadband': (0.001, 0.5),
+    'sample_timeout_ms': (100, 3000),
+    'worker_timeout_ms': (1000, 60000),
+    'click_min_ms': (20, 300),
+    'bimanual_zoom_gain': (0.1, 10.0),
     'analysis_width': (160, 1920),
     'analysis_height': (120, 1080),
     'target_fps': (1, 120),
@@ -184,6 +204,9 @@ def validate_config(config):
     """
     if not isinstance(config, dict):
         raise ValueError('Configuration must be a JSON object.')
+    missing = set(DEFAULT_CONFIG) - set(config)
+    if missing:
+        raise ValueError('Missing configuration keys: ' + ', '.join(sorted(missing)))
     unknown = set(config) - set(DEFAULT_CONFIG)
     if unknown:
         raise ValueError('Unknown configuration keys: ' + ', '.join(sorted(unknown)))
@@ -191,9 +214,13 @@ def validate_config(config):
         raise ValueError('backend must be one of ' + ', '.join(BACKENDS))
     if config['camera'] not in CAMERAS:
         raise ValueError('camera must be one of ' + ', '.join(CAMERAS))
+    if not isinstance(config['model_path'], str) or not config['model_path']:
+        raise ValueError('model_path must be a local path.')
+    if config['preferred_hand'] not in ('auto', 'Left', 'Right'):
+        raise ValueError('preferred_hand must be auto, Left or Right.')
     if config['mode'] not in MODES:
         raise ValueError('mode must be one of ' + ', '.join(MODES))
-    for key in ('flip_horizontal',):
+    for key in ('flip_horizontal', 'require_click_auth'):
         if not isinstance(config[key], bool):
             raise ValueError(key + ' must be a boolean.')
     if not isinstance(config['camera_device'], str) or not config['camera_device']:
@@ -202,10 +229,14 @@ def validate_config(config):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(key + ' must be a number.')
+        if isinstance(DEFAULT_CONFIG[key], int) and not isinstance(value, int):
+            raise ValueError(key + ' must be an integer.')
         if not (low <= value <= high):
             raise ValueError(f'{key} must be within [{low}, {high}].')
     if config['pinch_off'] <= config['pinch_on']:
         raise ValueError('pinch_off must be greater than pinch_on (hysteresis).')
+    if config['spatial_channel_host'] != '127.0.0.1':
+        raise ValueError('spatial_channel_host must be 127.0.0.1.')
     calib = config['calibration']
     if not isinstance(calib, dict):
         raise ValueError('calibration must be an object.')
@@ -220,8 +251,9 @@ def validate_config(config):
     return config
 
 
-def load_config(path=CONFIG_FILE):
+def load_config(path=None):
     """Charge la configuration en complétant les clés manquantes par les défauts."""
+    path = CONFIG_FILE if path is None else path
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     path = Path(path)
     if path.exists():
@@ -239,10 +271,10 @@ def load_config(path=CONFIG_FILE):
     return validate_config(merged)
 
 
-def save_config(config, path=CONFIG_FILE):
+def save_config(config, path=None):
     """Écrit la configuration de façon atomique après validation."""
     validate_config(config)
-    path = Path(path)
+    path = Path(CONFIG_FILE if path is None else path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='.hand-config-')
     try:
@@ -301,6 +333,14 @@ class HandSample:
             raise ValueError('A hand sample needs exactly 21 landmarks.')
         self.landmarks = [(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0)
                           for p in landmarks]
+        if any(not math.isfinite(v) for point in self.landmarks for v in point):
+            raise ValueError('Landmarks must be finite.')
+        if handedness not in ('Left', 'Right'):
+            raise ValueError('Unknown handedness.')
+        if not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1:
+            raise ValueError('Confidence must be finite and within [0, 1].')
+        if not math.isfinite(float(timestamp)):
+            raise ValueError('Timestamp must be finite.')
         self.handedness = handedness
         self.confidence = float(confidence)
         self.timestamp = float(timestamp)
@@ -350,24 +390,78 @@ class OneEuroFilter:
         self._t_prev = None
 
 
+def _solve_linear(matrix, vector):
+    """Résout matrix·x = vector (élimination de Gauss, pivot partiel). None si
+    quasi singulier. Petite implémentation stdlib : pas de dépendance numpy."""
+    n = len(vector)
+    a = [row[:] + [vector[i]] for i, row in enumerate(matrix)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(a[r][col]))
+        if abs(a[pivot][col]) < 1e-12:
+            return None
+        a[col], a[pivot] = a[pivot], a[col]
+        pv = a[col][col]
+        for j in range(col, n + 1):
+            a[col][j] /= pv
+        for r in range(n):
+            if r != col and abs(a[r][col]) > 1e-15:
+                factor = a[r][col]
+                for j in range(col, n + 1):
+                    a[r][j] -= factor * a[col][j]
+    return [a[i][n] for i in range(n)]
+
+
+def solve_homography(src, dst):
+    """Transformation projective 3x3 envoyant les 4 points `src` sur `dst`.
+
+    Retourne les 8 coefficients (a..h, i=1) ou None si les points sont dégénérés
+    (colinéaires). C'est ce qui permet une vraie correction de perspective :
+    la zone calibrée n'a pas à être un rectangle parallèle à la caméra."""
+    rows, rhs = [], []
+    for (x, y), (u, v) in zip(src, dst):
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        rhs.append(u)
+        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        rhs.append(v)
+    return _solve_linear(rows, rhs)
+
+
 class Calibration:
     """Mappe un point normalisé caméra vers l'espace écran [0,1].
 
-    La calibration capture les quatre coins de la zone utile ; on utilise leur
-    rectangle englobant pour un mappage linéaire déterministe, puis l'option
-    d'inversion horizontale (caméra frontale = miroir)."""
+    La calibration capture les quatre coins RÉELS de la zone utile (mesurés par
+    le tracker). On calcule alors une **homographie** quadrilatère -> carré unité
+    : correction de perspective complète, sans supposer un rectangle parallèle à
+    la caméra. Repli sur le rectangle englobant seulement si les coins sont
+    dégénérés. L'inversion horizontale (miroir de la caméra frontale) est
+    appliquée après la transformation."""
 
     def __init__(self, calib, flip_horizontal):
         self.enabled = bool(calib.get('enabled'))
-        corners = [calib['top_left'], calib['top_right'], calib['bottom_right'], calib['bottom_left']]
-        xs = [c[0] for c in corners]
-        ys = [c[1] for c in corners]
+        self.flip = bool(flip_horizontal)
+        src = [tuple(calib['top_left']), tuple(calib['top_right']),
+               tuple(calib['bottom_right']), tuple(calib['bottom_left'])]
+        dst = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        self.homography = solve_homography(src, dst) if self.enabled else None
+        xs = [c[0] for c in src]
+        ys = [c[1] for c in src]
         self.min_x, self.max_x = min(xs), max(xs)
         self.min_y, self.max_y = min(ys), max(ys)
-        self.flip = bool(flip_horizontal)
+
+    def _project(self, nx, ny):
+        a, b, c, d, e, f, g, hh = self.homography
+        denom = g * nx + hh * ny + 1.0
+        if abs(denom) < 1e-9:
+            return None
+        return (a * nx + b * ny + c) / denom, (d * nx + e * ny + f) / denom
 
     def map(self, nx, ny):
-        if self.enabled and self.max_x - self.min_x > 1e-3 and self.max_y - self.min_y > 1e-3:
+        if self.enabled and self.homography is not None:
+            projected = self._project(nx, ny)
+            if projected is not None:
+                nx, ny = projected
+        elif self.enabled and self.max_x - self.min_x > 1e-3 and self.max_y - self.min_y > 1e-3:
+            # Repli rectangle englobant si l'homographie est dégénérée.
             nx = (nx - self.min_x) / (self.max_x - self.min_x)
             ny = (ny - self.min_y) / (self.max_y - self.min_y)
         if self.flip:
@@ -719,7 +813,7 @@ class BaseActionSink:
                 self.button_up(button)
             except Exception:
                 pass
-        self.held.clear()
+        # Failed releases remain tracked so the next cleanup can retry.
 
     def close(self):
         self.release_all()
@@ -730,9 +824,9 @@ class RecordingActionSink(BaseActionSink):
 
     Aucun test ne déplace réellement le pointeur : il utilise ce sink."""
 
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, maxlen=None):
         super().__init__()
-        self.actions = []
+        self.actions = [] if maxlen is None else deque(maxlen=maxlen)
         self._fail_on = fail_on
 
     def _record(self, name, **kw):
@@ -784,12 +878,15 @@ class XdotoolActionSink(BaseActionSink):
 
     def _run(self, argv):
         # argv est TOUJOURS une liste de chaînes littérales et d'entiers formatés.
+        if argv[0] != 'mouseup' and STOP_FILE.exists():
+            self.release_all()
+            raise RuntimeError('Shared STOP is active.')
         env = {**os.environ, 'DISPLAY': self.display}
         subprocess.run(['xdotool', *[str(a) for a in argv]], env=env,
                        check=True, capture_output=True, timeout=5)
 
     def move(self, x, y):
-        self._run(['mousemove', '--sync', int(x), int(y)])
+        self._run(['mousemove', int(x), int(y)])
 
     def click(self, button='left', count=1):
         b = self.BUTTONS.get(button)
@@ -801,8 +898,8 @@ class XdotoolActionSink(BaseActionSink):
         b = self.BUTTONS.get(button)
         if b is None:
             raise ValueError('Unknown button.')
+        self.held.add(button)  # Track even if the command times out after injection.
         self._run(['mousedown', b])
-        self.held.add(button)
 
     def button_up(self, button='left'):
         b = self.BUTTONS.get(button)
@@ -830,13 +927,16 @@ class XdotoolActionSink(BaseActionSink):
 # ===========================================================================
 #  Point & Command — interface locale d'événements (canal 127.0.0.1)
 # ===========================================================================
-def hand_event(now, telemetry, screen_xy, gesture, mode, command=None):
+def hand_event(now, telemetry, screen_xy, gesture, mode, command=None, amount=None):
     """Construit un événement Point & Command sérialisable.
 
-    Aucune image : seulement horodatage monotone, coordonnées, main, geste,
-    confiance et mode. Support futur d'une commande vocale associée."""
+    Aucune image : seulement horodatage monotone (`timestamp`), coordonnées,
+    main, geste, confiance et mode. Le schéma correspond à
+    hand_events.validate_event afin qu'un événement Spatial puisse transiter par
+    le pont local authentifié sans transformation. Support futur d'une commande
+    vocale associée au point désigné."""
     ev = {
-        'timestamp_monotonic': round(now, 6),
+        'timestamp': round(now, 6),
         'normalized': None if telemetry.nx is None else [round(telemetry.nx, 5), round(telemetry.ny, 5)],
         'screen': None if screen_xy is None else [int(screen_xy[0]), int(screen_xy[1])],
         'handedness': telemetry.handedness,
@@ -846,6 +946,8 @@ def hand_event(now, telemetry, screen_xy, gesture, mode, command=None):
     }
     if command is not None:
         ev['command'] = command
+    if amount is not None:
+        ev['amount'] = round(min(10.0, max(0.0, amount)), 4)
     return ev
 
 
@@ -860,8 +962,8 @@ class BaseEventChannel:
 class RecordingEventChannel(BaseEventChannel):
     """Canal simulé pour les tests : conserve les événements en mémoire."""
 
-    def __init__(self):
-        self.events = []
+    def __init__(self, maxlen=None):
+        self.events = [] if maxlen is None else deque(maxlen=maxlen)
 
     def emit(self, event):
         # On valide en re-sérialisant : un événement doit rester du JSON pur.
@@ -908,13 +1010,17 @@ class HandControlEngine:
     process_sample() : synchrone, sans caméra ni thread."""
 
     def __init__(self, config, output=None, channel=None, screen_size=(800, 480),
-                 stop_file=STOP_FILE, initial_state=S_ARMED):
+                 stop_file=STOP_FILE, initial_state=S_ARMED, desktop=None):
         self.cfg = config
         self.mode = config['mode']
         self.screen_size = screen_size
         self.stop_file = Path(stop_file)
         self.output = output if output is not None else RecordingActionSink()
         self.channel = channel if channel is not None else RecordingEventChannel()
+        # `desktop` (hand_desktop.Desktop, optionnel) : autorisation clavier des
+        # clics système (F8 maintenu) et masquage réel du curseur (XFixes).
+        self.desktop = desktop
+        self.require_click_auth = config['require_click_auth']
         self.recognizer = GestureRecognizer(config)
         self.smoother = PointerSmoother(config, screen_size)
         self.state = initial_state
@@ -928,6 +1034,13 @@ class HandControlEngine:
         self._lost_frames = 0
         self._spread_cooldown_t = -1e9
         self._perf = PerfMonitor()
+        # Conservation de la main pilote (continuité entre frames).
+        self._driver_hand = None      # 'Left' / 'Right'
+        self._driver_pos = None       # dernière position (nx, ny) du pilote
+        self._driver_last_seen = -1e9
+        # Zoom à deux mains : référence établie au début du geste.
+        self._bimanual_ref = None
+        self._spatial_drag_pos = None
 
     # -- transitions -------------------------------------------------------
     def _release_and(self, new_state):
@@ -936,6 +1049,10 @@ class HandControlEngine:
         except Exception:
             pass
         self.smoother.reset()
+        self.recognizer = GestureRecognizer(self.cfg)
+        self._arm_pose_since = None
+        self._bimanual_ref = None
+        self._spatial_drag_pos = None
         self.state = new_state
 
     def pause(self):
@@ -958,34 +1075,92 @@ class HandControlEngine:
             self.state = S_ARMED
             self._arm_pose_since = None
 
+    # -- sélection de la main pilote (continuité) --------------------------
+    @staticmethod
+    def _normalize(sample):
+        """Accepte None, un HandSample, ou une liste de HandSample."""
+        if sample is None:
+            return []
+        if isinstance(sample, HandSample):
+            return [sample]
+        return list(sample)
+
+    def select_driver(self, cands, now):
+        """Choisit la main pilote avec continuité : on ne bascule pas sur l'autre
+        main pour une confiance momentanément meilleure. On garde la main courante
+        (même handedness, proximité de la position précédente) ; à sa disparition,
+        on attend driver_switch_ms avant de transférer le contrôle."""
+        if not cands:
+            return None
+        # Continuité : prolonger la main pilote actuelle si elle est présente.
+        if self._driver_hand is not None:
+            same = [s for s in cands if s.handedness == self._driver_hand]
+            if same:
+                best = (min(same, key=lambda s: _distance(s.index_tip[:2], self._driver_pos))
+                        if self._driver_pos is not None else same[0])
+                # On garde la main courante sauf saut invraisemblable (une autre
+                # main mal étiquetée avec la même handedness) -> traité en perte.
+                if self._driver_pos is None or _distance(best.index_tip[:2], self._driver_pos) <= self.cfg['driver_proximity']:
+                    return self._set_driver(best, now)
+            # Main pilote absente/incohérente : temporiser avant tout transfert.
+            if (now - self._driver_last_seen) * 1000 < self.cfg['driver_switch_ms']:
+                return None
+        # Nouvelle main pilote : préférence explicite, sinon meilleure confiance.
+        pref = self.cfg['preferred_hand']
+        if pref in ('Left', 'Right'):
+            cands = [s for s in cands if s.handedness == pref] or cands
+        return self._set_driver(max(cands, key=lambda s: s.confidence), now)
+
+    def _set_driver(self, sample, now):
+        self._driver_hand = sample.handedness
+        self._driver_pos = sample.index_tip[:2]
+        self._driver_last_seen = now
+        return sample
+
     # -- boucle testable ---------------------------------------------------
     def process_sample(self, sample, now):
-        """Traite une main (ou None). Retourne la liste des Gesture pris en compte."""
+        """Traite une image (None, une main, ou une liste de mains).
+
+        Retourne la liste des Gesture pris en compte."""
+        hands = self._normalize(sample)
         # 1) STOP partagé : priorité absolue.
         if self.stop_file.exists():
             if self.state != S_STOPPED:
                 self._release_and(S_STOPPED)
-            self.tracking = sample is not None
-            self.confidence = sample.confidence if sample else 0.0
+            self.tracking = bool(hands)
+            self.confidence = max((h.confidence for h in hands), default=0.0)
             return []
         # Sortie de STOPPED : jamais automatique. Le fichier STOP disparu ne
         # suffit pas ; il faut une réactivation locale explicite (request_active,
         # via le centre de contrôle ou ghost-hand resume/start). On reste donc
         # STOPPED tant que personne ne réactive.
         if self.state == S_STOPPED:
-            self.tracking = sample is not None
+            self.tracking = bool(hands)
             return []
 
         if self.state == S_DISABLED:
             return []
 
-        # 2) Seuil de confiance / perte de main.
-        if sample is None or sample.confidence < self.cfg['confidence_threshold']:
-            self._handle_hand_lost(sample, now)
+        # 2) Mains fiables (au-dessus du seuil de confiance).
+        cands = [h for h in hands if h.confidence >= self.cfg['confidence_threshold']]
+
+        # 3) Zoom à deux mains (Spatial, ACTIVE) : prioritaire, court-circuite le
+        # reste pour éviter d'activer des gestes incompatibles simultanément.
+        if self.state == S_ACTIVE and self.mode == 'spatial' and len(cands) >= 2:
+            self.tracking = True
+            self.confidence = max(h.confidence for h in cands)
+            self._dispatch_bimanual(cands, now)
+            return []
+        self._bimanual_ref = None
+
+        # 4) Sélection de la main pilote (continuité).
+        driver = self.select_driver(cands, now)
+        if driver is None:
+            self._handle_hand_lost(None, now)
             return []
         self._lost_frames = 0
 
-        events, tel = self.recognizer.update(sample, now)
+        events, tel = self.recognizer.update(driver, now)
         self.last_pose = tel.pose
         self.confidence = tel.confidence
         self.tracking = True
@@ -1023,6 +1198,7 @@ class HandControlEngine:
             self._arm_pose_since = None
 
     def _handle_hand_lost(self, sample, now):
+        self._arm_pose_since = None
         self._lost_frames += 1
         self.tracking = False
         self.confidence = sample.confidence if sample else 0.0
@@ -1041,6 +1217,7 @@ class HandControlEngine:
         if ev.kind == G_OPEN_PALM:
             if self.mode == 'presentation':
                 self.pointer_visible = not self.pointer_visible
+                self._set_cursor_visible(self.pointer_visible)
                 self._emit(now, tel, None, ev.kind, command='toggle_pointer')
                 return True
             self.pause()
@@ -1060,6 +1237,28 @@ class HandControlEngine:
             return None
         return self.smoother.update(ev.nx, ev.ny, now)
 
+    def _click_authorized(self):
+        """Un clic système dans une application externe ne dit rien au suivi de
+        main de sa conséquence (achat, suppression, envoi…). Une validation
+        clavier (F8 maintenu) doit l'autoriser. Sans autorisation vérifiable, on
+        s'abstient : le suivi positionne le pointeur, mais n'active pas seul un
+        contrôle externe sensible. Ne pas retirer cette sécurité pour la fluidité."""
+        if not self.require_click_auth:
+            return True
+        if self.desktop is None:
+            return False
+        try:
+            return bool(self.desktop.authorized())
+        except Exception:
+            return False
+
+    def _set_cursor_visible(self, visible):
+        if self.desktop is not None:
+            try:
+                self.desktop.visible(visible)
+            except Exception:
+                pass
+
     def _dispatch_pointer(self, ev, tel, now):
         if ev.kind in (G_MOVE, G_DRAG_MOVE):
             pt = self._screen_xy(ev, now)
@@ -1068,6 +1267,10 @@ class HandControlEngine:
             self.output.move(*pt)
             if ev.kind == G_MOVE:
                 self._emit(now, tel, pt, ev.kind)
+            return True
+        # Clics système : soumis à la validation clavier (application externe).
+        if ev.kind in (G_LEFT_CLICK, G_RIGHT_CLICK, G_DOUBLE_CLICK, G_DRAG_START) and not self._click_authorized():
+            self._emit(now, tel, self.smoother.last_pixel, ev.kind, command='click_needs_key')
             return True
         if ev.kind == G_LEFT_CLICK:
             self.output.click('left')
@@ -1123,20 +1326,64 @@ class HandControlEngine:
             return True
         return False
 
+    def _dispatch_bimanual(self, cands, now):
+        """Zoom à deux mains : distance poignet-poignet, référence au début du
+        geste, zoom relatif. Une bande morte évite le jitter ; la référence est
+        avancée à chaque pas pour ne jamais accumuler à l'infini. La disparition
+        d'une main termine le geste (self._bimanual_ref remis à None en amont)."""
+        a, b = cands[0], cands[1]
+        distance = _distance(a.landmarks[WRIST][:2], b.landmarks[WRIST][:2])
+        if self._bimanual_ref is None:
+            # Début du geste : on fixe la référence, aucun zoom involontaire.
+            self._bimanual_ref = distance
+            return
+        deadband = self.cfg['bimanual_zoom_deadband']
+        delta = distance - self._bimanual_ref
+        if abs(delta) < deadband:
+            return
+        amount = min(10.0, abs(delta) * self.cfg['bimanual_zoom_gain'])
+        direction = 'in' if delta > 0 else 'out'
+        self._bimanual_ref = distance  # avancer la référence : pas d'accumulation
+        mid_x = (a.landmarks[WRIST][0] + b.landmarks[WRIST][0]) / 2
+        mid_y = (a.landmarks[WRIST][1] + b.landmarks[WRIST][1]) / 2
+        tel = Telemetry(P_UNKNOWN, mid_x, mid_y, min(a.confidence, b.confidence), True, a.handedness)
+        ev = Gesture(G_ZOOM, mid_x, mid_y, direction=direction, amount=amount)
+        try:
+            self._dispatch(ev, tel, now)
+        except Exception as exc:
+            self.error = str(exc)
+            self._release_and(S_PAUSED)
+
     def _dispatch_spatial(self, ev, tel, now):
         # Spatial : aucune injection bureau. On émet des commandes JSON validées
-        # sur le canal local (interface documentée pour GHOSTBOARD Spatial).
+        # (schéma hand_events) sur le canal local — sélectionner, tourner,
+        # incliner, zoomer, éclater. Un pincement maintenu établit la référence ;
+        # l'axe dominant du déplacement décide rotation (horizontal) ou
+        # inclinaison (vertical).
         command = None
+        amount = None
         if ev.kind == G_MOVE:
             command = 'point'
         elif ev.kind in (G_LEFT_CLICK, G_DRAG_START):
             command = 'select'
+            self._spatial_drag_pos = (ev.nx, ev.ny)  # référence de la manipulation
         elif ev.kind == G_DRAG_MOVE:
-            command = 'orbit'
+            prev = getattr(self, '_spatial_drag_pos', None) or (ev.nx, ev.ny)
+            dx, dy = ev.nx - prev[0], ev.ny - prev[1]
+            self._spatial_drag_pos = (ev.nx, ev.ny)
+            if abs(dx) < 1e-4 and abs(dy) < 1e-4:
+                return False
+            amount = math.hypot(dx, dy) * 10.0
+            if abs(dx) >= abs(dy):
+                command = 'rotate_right' if dx > 0 else 'rotate_left'
+            else:
+                command = 'tilt_down' if dy > 0 else 'tilt_up'
         elif ev.kind == G_DRAG_END:
             command = 'release'
+            self._spatial_drag_pos = None
         elif ev.kind == G_ZOOM:
             command = 'zoom_' + (ev.direction or 'in')
+            amount = ev.amount
         elif ev.kind == G_SPREAD:
             if (now - self._spread_cooldown_t) * 1000 < 1200:
                 return False
@@ -1151,11 +1398,11 @@ class HandControlEngine:
         pt = None
         if ev.nx is not None:
             pt = (int(ev.nx * (self.screen_size[0] - 1)), int(ev.ny * (self.screen_size[1] - 1)))
-        self._emit(now, tel, pt, ev.kind, command=command)
+        self._emit(now, tel, pt, ev.kind, command=command, amount=amount)
         return True
 
-    def _emit(self, now, tel, screen_xy, gesture, command=None):
-        event = hand_event(now, tel, screen_xy, gesture, self.mode, command)
+    def _emit(self, now, tel, screen_xy, gesture, command=None, amount=None):
+        event = hand_event(now, tel, screen_xy, gesture, self.mode, command, amount)
         self.last_event = event
         try:
             self.channel.emit(event)
@@ -1174,6 +1421,9 @@ class HandControlEngine:
             'confidence': round(self.confidence, 4),
             'pose': self.last_pose,
             'pointer_visible': self.pointer_visible,
+            'driver_hand': self._driver_hand,
+            'preferred_hand': self.cfg['preferred_hand'],
+            'click_auth_required': self.require_click_auth,
             'held_buttons': sorted(self.output.held),
             'error': self.error,
             'fps_capture': round(self._perf.fps_capture, 1),
@@ -1194,13 +1444,24 @@ class HandControlEngine:
             except Exception:
                 pass
             self.mode = mode
+            self.recognizer = GestureRecognizer(self.cfg)
+            self._arm_pose_since = None
+            self._bimanual_ref = None
+            self._spatial_drag_pos = None
             self.smoother.reset()
 
     def close(self):
         try:
             self.output.close()
         finally:
-            self.channel.close()
+            try:
+                self.channel.close()
+            finally:
+                if self.desktop is not None:
+                    try:
+                        self.desktop.close()
+                    except Exception:
+                        pass
 
 
 # ===========================================================================
@@ -1367,48 +1628,51 @@ class SimulatedBackend(HandTrackerBackend):
 
 
 class MediaPipeBackend(HandTrackerBackend):
-    """MediaPipe Hand Landmarker. Importé paresseusement : le module reste
-    utilisable et testable sans MediaPipe installé."""
+    """Tasks VIDEO mode. The model is local; there are no runtime downloads.
 
-    name = 'mediapipe'
+    Result confidence is handedness classification confidence, not an exposed
+    palm-presence score. Presence/detection/tracking gates run inside Tasks.
+    """
+    name = 'mediapipe-tasks'
 
-    def __init__(self, max_hands=1, min_confidence=0.5, model_path=None):
+    def __init__(self, max_hands=1, min_confidence=.6, model_path=None):
+        model = Path(model_path or DEFAULT_CONFIG['model_path']).expanduser()
+        if not model.is_file():
+            raise RuntimeError('Hand Landmarker model missing: ' + str(model) +
+                               '. Run install/hand-deps.py; no model is downloaded at runtime.')
         try:
-            import mediapipe as mp  # noqa: F401
-        except Exception as exc:  # pragma: no cover - dépend de l'environnement
-            raise RuntimeError(
-                'MediaPipe is not available for this platform. Install a build '
-                'compatible with Raspberry Pi OS (Debian 13 ARM64) or use the '
-                'simulated backend. See INSTALLATION-PI5-FR.md.') from exc
+            import mediapipe as mp
+            from mediapipe.tasks.python import BaseOptions
+            from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions, RunningMode
+        except (ImportError, AttributeError) as exc:
+            raise RuntimeError('MediaPipe Tasks unavailable. Run the pinned install/hand-deps.py setup.') from exc
         self._mp = mp
-        self._max_hands = max_hands
-        self._min_conf = min_confidence
-        self._hands = mp.solutions.hands.Hands(
-            static_image_mode=False, max_num_hands=max_hands,
-            min_detection_confidence=min_confidence,
-            min_tracking_confidence=min_confidence)
+        self._last_ms = -1
+        options = HandLandmarkerOptions(base_options=BaseOptions(model_asset_path=str(model)),
+            running_mode=RunningMode.VIDEO, num_hands=max_hands,
+            min_hand_detection_confidence=min_confidence,
+            min_hand_presence_confidence=min_confidence, min_tracking_confidence=min_confidence)
+        self._hands = HandLandmarker.create_from_options(options)
 
-    def detect(self, frame, timestamp):  # pragma: no cover - nécessite MediaPipe + image
-        results = self._hands.process(frame)
+    def detect(self, frame, timestamp):
+        ms = max(self._last_ms + 1, int(timestamp * 1000))
+        self._last_ms = ms
+        image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=frame)
+        try:
+            result = self._hands.detect_for_video(image, ms)
+        finally:
+            image = None
         samples = []
-        if not results.multi_hand_landmarks:
-            return samples
-        handedness = results.multi_handedness or []
-        for i, hand in enumerate(results.multi_hand_landmarks):
-            landmarks = [(lm.x, lm.y, lm.z) for lm in hand.landmark]
-            label = 'Right'
-            conf = self._min_conf
-            if i < len(handedness) and handedness[i].classification:
-                label = handedness[i].classification[0].label
-                conf = handedness[i].classification[0].score
-            samples.append(HandSample(landmarks, label, conf, timestamp))
+        for landmarks, categories in zip(result.hand_landmarks, result.handedness):
+            if not categories:
+                continue
+            category = categories[0]
+            samples.append(HandSample([(p.x, p.y, p.z) for p in landmarks],
+                                      category.category_name, category.score, timestamp))
         return samples
 
-    def close(self):  # pragma: no cover
-        try:
-            self._hands.close()
-        except Exception:
-            pass
+    def close(self):
+        self._hands.close()
 
 
 class HailoBackend(HandTrackerBackend):  # pragma: no cover - non implémenté
@@ -1428,18 +1692,9 @@ class HailoBackend(HandTrackerBackend):  # pragma: no cover - non implémenté
 
 
 def make_backend(config):
-    """Choisit le backend : mediapipe si disponible, sinon simulé, selon la
-    configuration. Ne bascule jamais silencieusement sur Hailo."""
-    choice = config['backend']
-    if choice == 'simulated':
+    if config['backend'] == 'simulated':
         return SimulatedBackend()
-    if choice == 'mediapipe':
-        return MediaPipeBackend(config['max_hands'], config['confidence_threshold'])
-    # auto
-    try:
-        return MediaPipeBackend(config['max_hands'], config['confidence_threshold'])
-    except RuntimeError:
-        return SimulatedBackend()
+    return MediaPipeBackend(config['max_hands'], config['confidence_threshold'], config['model_path'])
 
 
 # ===========================================================================
@@ -1520,7 +1775,13 @@ class ThreadedCamera:
     l'image la plus récente. L'inférence en retard fait abandonner les anciennes
     images ; la mémoire ne croît jamais."""
 
-    def __init__(self, source):
+    def __init__(self, source, fps=30):
+        self.fps = fps
+        self.captured = 0
+        self.dropped = 0
+        self.first_capture = None
+        self.last_capture = None
+        self.error = None
         self._source = source
         self.name = getattr(source, 'name', 'camera')
         self._buf = LatestFrameBuffer()
@@ -1533,25 +1794,50 @@ class ThreadedCamera:
         self._thread.start()
         return self
 
-    def _loop(self):  # pragma: no cover - dépend d'une caméra réelle
-        while not self._stop.is_set():
-            try:
+    def _loop(self):
+        try:
+            while not self._stop.is_set():
+                started = time.monotonic()
                 frame = self._source.read()
-            except Exception:
+                if frame is None:
+                    raise RuntimeError('Camera stream closed.')
+                if self._stop.is_set():
+                    break
+                ended = time.monotonic()
+                self.captured += 1
+                self.first_capture = self.first_capture if self.first_capture is not None else ended
+                self.last_capture = ended
+                self._buf.put((frame, started, ended - started))
                 frame = None
-            if frame is None:
-                time.sleep(0.005)
-                continue
-            self._buf.put(frame)
+                self._stop.wait(max(0, 1 / self.fps - (time.monotonic() - started)))
+        except Exception as exc:
+            self.error = exc
+        finally:
+            frame = None
 
     def read_latest(self):
-        return self._buf.get()
+        if self.error:
+            raise RuntimeError('Camera capture failed: ' + str(self.error)) from self.error
+        packet, dropped = self._buf.get()
+        self.dropped += dropped
+        return packet, dropped
+
+    def statistics(self):
+        span = (self.last_capture or 0) - (self.first_capture or 0)
+        return {'captured_frames': self.captured, 'fps_capture': (self.captured - 1) / span if span > 0 else 0,
+                'dropped_frames': self.dropped}
+
+    def set_fps(self, fps):
+        self.fps = fps
 
     def stop(self):
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=1)
-        self._source.stop()
+        try:
+            self._source.stop()
+        finally:
+            if self._thread:
+                self._thread.join(timeout=2)
+            self._buf.get()  # Drop the last unconsumed image.
 
 
 class Picamera2Source(CameraSource):  # pragma: no cover - nécessite le matériel
@@ -1564,7 +1850,7 @@ class Picamera2Source(CameraSource):  # pragma: no cover - nécessite le matéri
             raise RuntimeError('Picamera2/libcamera is not available.') from exc
         self._picam = Picamera2()
         self._config = self._picam.create_preview_configuration(
-            main={'format': 'RGB888', 'size': (width, height)})
+            main={'format': 'BGR888', 'size': (width, height)}, buffer_count=2, queue=False)
         self._picam.configure(self._config)
 
     def start(self):
@@ -1594,7 +1880,8 @@ class V4L2Source(CameraSource):  # pragma: no cover - nécessite le matériel
         index = device
         if isinstance(device, str) and device.startswith('/dev/video'):
             index = int(device.replace('/dev/video', '') or 0)
-        self._cap = cv2.VideoCapture(index)
+        self._cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
@@ -1635,8 +1922,8 @@ def make_camera(config):  # pragma: no cover - dépend du matériel
 # ===========================================================================
 #  État partagé, contrôle inter-processus et calibration
 # ===========================================================================
-def write_state(status, path=STATE_FILE):
-    path = Path(path)
+def write_state(status, path=None):
+    path = Path(STATE_FILE if path is None else path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='.hand-state-')
     try:
@@ -1647,8 +1934,8 @@ def write_state(status, path=STATE_FILE):
         Path(tmp).unlink(missing_ok=True)
 
 
-def read_state(path=STATE_FILE):
-    path = Path(path)
+def read_state(path=None):
+    path = Path(STATE_FILE if path is None else path)
     if not path.exists():
         return {'state': S_DISABLED, 'running': False,
                 'note': 'Hand control is not running. Start it with ghost-hand start.'}
@@ -1658,13 +1945,15 @@ def read_state(path=STATE_FILE):
         return {'state': 'unknown', 'running': False}
     # Le service est considéré « vivant » si l'état a été écrit récemment.
     fresh = (time.time() - path.stat().st_mtime) < 5
-    data['running'] = fresh
+    if not isinstance(data, dict):
+        return {'state': S_DISABLED, 'running': False}
+    data['running'] = fresh and data.get('state') != S_DISABLED and data.get('running', True)
     return data
 
 
-def write_control(command, path=CONTROL_FILE):
+def write_control(command, path=None):
     """Écrit une requête de contrôle atomique lue par l'engine en fonctionnement."""
-    path = Path(path)
+    path = Path(CONTROL_FILE if path is None else path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     command = {**command, 'ts': time.time()}
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='.hand-ctl-')
@@ -1676,8 +1965,8 @@ def write_control(command, path=CONTROL_FILE):
         Path(tmp).unlink(missing_ok=True)
 
 
-def read_control(path=CONTROL_FILE):
-    path = Path(path)
+def read_control(path=None):
+    path = Path(CONTROL_FILE if path is None else path)
     if not path.exists():
         return None
     try:
@@ -1688,8 +1977,11 @@ def read_control(path=CONTROL_FILE):
 
 def apply_control(engine, command):
     """Applique une requête de contrôle à un engine en marche."""
-    if not command:
+    if not isinstance(command, dict) or not command:
         return
+    if command == getattr(engine, '_last_control', None):
+        return
+    engine._last_control = dict(command)
     desired = command.get('desired')
     if desired == 'paused':
         engine.pause()
@@ -1824,7 +2116,8 @@ def cmd_doctor(as_json):
     return 0 if config_ok else 1
 
 
-def run_engine(config=None, camera=None, backend=None, duration=None, on_status=None):
+def run_engine(config=None, camera=None, backend=None, duration=None, on_status=None,
+               output=None, observe_only=False):
     """Boucle principale : capture -> détection -> gestes -> actions.
 
     File d'une seule image récente : si l'inférence prend du retard, les images
@@ -1833,25 +2126,41 @@ def run_engine(config=None, camera=None, backend=None, duration=None, on_status=
     config = config or load_config()
     validate_config(config)
     screen = _query_screen_size()
-    output = None
-    channel = None
-    try:
-        output = XdotoolActionSink()
-    except RuntimeError:
-        # Sans xdotool (ex. hors X), on n'injecte rien : sink d'enregistrement.
-        output = RecordingActionSink()
-    if config['spatial_channel_port']:
-        channel = LocalEventChannel(config['spatial_channel_host'], config['spatial_channel_port'])
+    if output is None:
+        output = RecordingActionSink(maxlen=1) if observe_only else XdotoolActionSink()
+    # Canal Spatial : le pont local authentifié de Codex (hand_events). Il ignore
+    # les événements non-spatial et reste muet si aucun pont n'écoute.
+    desktop = None
+    if observe_only:
+        channel = RecordingEventChannel(maxlen=1)
     else:
-        channel = RecordingEventChannel()
+        try:
+            import hand_events
+            channel = hand_events.Channel()
+        except Exception:
+            channel = RecordingEventChannel(maxlen=1)
+        # Autorisation clavier des clics externes (F8) + masquage réel du curseur.
+        try:
+            import hand_desktop
+            desktop = hand_desktop.Desktop(os.environ.get('DISPLAY'))
+        except Exception:
+            desktop = None
 
-    camera = camera if camera is not None else make_camera(config)
+    backend = backend if backend is not None else make_backend(config)
+    try:
+        camera = camera if camera is not None else make_camera(config)
+    except Exception:
+        backend.close()
+        output.close()
+        channel.close()
+        if desktop is not None:
+            desktop.close()
+        raise
     # File d'une seule image récente : les sources réelles passent par un thread
     # de capture qui abandonne les anciennes images. Le simulateur livre tout.
     if not hasattr(camera, 'read_latest'):
-        camera = ThreadedCamera(camera)
-    backend = backend if backend is not None else make_backend(config)
-    engine = HandControlEngine(config, output=output, channel=channel, screen_size=screen)
+        camera = ThreadedCamera(camera, config['target_fps'])
+    engine = HandControlEngine(config, output=output, channel=channel, screen_size=screen, desktop=desktop)
     perf = engine._perf
 
     started = time.monotonic()
@@ -1865,7 +2174,11 @@ def run_engine(config=None, camera=None, backend=None, duration=None, on_status=
             if duration is not None and (loop_start - started) >= duration:
                 break
             # Contrôle inter-processus.
-            apply_control(engine, read_control())
+            if not observe_only:
+                apply_control(engine, read_control())
+            if engine.stop_file.exists():
+                engine._release_and(S_STOPPED)
+                break
             if engine.state == S_DISABLED:
                 break  # ghost-hand stop : sortie propre (boutons relâchés dans finally)
             # Capture : image la plus récente + nombre d'images abandonnées.
@@ -1884,28 +2197,38 @@ def run_engine(config=None, camera=None, backend=None, duration=None, on_status=
                 time.sleep(interval)
                 continue
             t_inf = time.monotonic()
-            samples = backend.detect(frame, t_inf)
+            try:
+                samples = backend.detect(frame, t_inf)
+            finally:
+                frame = None
             inference_s = time.monotonic() - t_inf
-            sample = samples[0] if samples else None
             now = time.monotonic()
-            engine.process_sample(sample, now)
+            # On transmet TOUTES les mains : la persistance de la main pilote et
+            # le zoom à deux mains sont décidés dans l'engine.
+            if not observe_only:
+                engine.process_sample(samples, now)
             perf.record(capture_s, inference_s, now - loop_start, now)
             # État partagé (throttle) + réduction automatique si surcharge.
-            if now - last_state_write > 0.5:
+            if not observe_only and now - last_state_write > 0.5:
                 status = engine.status()
                 write_state(status)
                 if on_status:
                     on_status(status)
                 last_state_write = now
             _adaptive_pace(perf, config)
+            if isinstance(camera, ThreadedCamera):
+                camera.fps = config['target_fps']
             elapsed = time.monotonic() - loop_start
             if elapsed < interval:
                 time.sleep(interval - elapsed)
     finally:
-        engine.close()
-        camera.stop()
-        backend.close()
-        write_state({**engine.status(), 'state': S_DISABLED, 'running': False})
+        with ExitStack() as cleanup:
+            cleanup.callback(backend.close)
+            cleanup.callback(camera.stop)
+            cleanup.callback(engine.close)
+            frame = None
+        if not observe_only:
+            write_state({**engine.status(), 'state': S_STOPPED if engine.state == S_STOPPED else S_DISABLED, 'running': False})
     return perf
 
 
@@ -1926,8 +2249,13 @@ def cmd_benchmark(seconds):
     l'indique clairement dans le rapport."""
     config = load_config()
     screen = _query_screen_size()
-    # Backend réel si disponible, sinon simulé (étiqueté comme tel).
-    backend = make_backend(config)
+    # Backend réel si disponible, sinon simulé (étiqueté comme tel). make_backend
+    # ne bascule PAS seul sur le simulé (durcissement) : on rattrape ici pour que
+    # le benchmark reste exécutable, en indiquant clairement le pipeline simulé.
+    try:
+        backend = make_backend(config)
+    except RuntimeError:
+        backend = SimulatedBackend()
     real_camera = False
     try:
         camera = make_camera(config)
@@ -1941,7 +2269,7 @@ def cmd_benchmark(seconds):
         backend = SimulatedBackend()
         real_camera = False
 
-    engine_perf = run_engine(config=config, camera=camera, backend=backend, duration=seconds)
+    engine_perf = run_engine(config=config, camera=camera, backend=backend, duration=seconds, observe_only=True)
     report = engine_perf.report()
     report.update({
         'seconds_requested': seconds,
@@ -2098,6 +2426,42 @@ def calibrate(interactive=True):
         return _calibrate_terminal(config)
 
 
+def measure_calibration_point(config):
+    """Capture actual landmarks only; never inject input or retain an image."""
+    if STOP_FILE.exists():
+        raise RuntimeError('Shared STOP is active.')
+    with ExitStack() as cleanup:
+        backend = make_backend(config)
+        cleanup.callback(backend.close)
+        if isinstance(backend, SimulatedBackend):
+            raise RuntimeError('Calibration requires a real tracking backend.')
+        camera = make_camera(config)
+        cleanup.callback(camera.stop)
+        camera.start()
+        points = []
+        for _ in range(12):
+            if STOP_FILE.exists():
+                raise RuntimeError('Shared STOP is active.')
+            frame = camera.read()
+            try:
+                if frame is None:
+                    raise RuntimeError('Camera stream closed.')
+                samples = backend.detect(frame, time.monotonic())
+            finally:
+                frame = None
+            if samples and samples[0].confidence >= config['confidence_threshold']:
+                points.append(samples[0].index_tip[:2])
+            time.sleep(1 / config['target_fps'])
+        if len(points) < 6:
+            raise RuntimeError('Keep the index visible and steady; insufficient valid samples.')
+        result = [_percentile([p[i] for p in points], 50) for i in (0, 1)]
+        if any(not 0 <= v <= 1 for v in result):
+            raise ValueError('Index is outside the camera image.')
+        if max(math.dist(p, result) for p in points) > 0.06:
+            raise ValueError('Hand moved too much; retry the corner.')
+        return result
+
+
 def _calibrate_terminal(config):
     print('Reach each corner of the usable camera area and press Enter.')
     corners = ['top_left', 'top_right', 'bottom_right', 'bottom_left']
@@ -2105,7 +2469,7 @@ def _calibrate_terminal(config):
     for corner in corners:
         input('  Move your index to the ' + corner.replace('_', ' ') + ' corner, then press Enter...')
         # Sans caméra en direct on garde la valeur par défaut du coin.
-        result[corner] = config['calibration'][corner]
+        result[corner] = measure_calibration_point(config)
     config['calibration'].update(result)
     config['calibration']['enabled'] = True
     save_config(config)
@@ -2139,7 +2503,11 @@ def _calibrate_gui(config):  # pragma: no cover - nécessite Tk et une caméra
     def capture(_):
         name = corners[state['i']][0]
         # Sur matériel réel : lire une image et détecter le bout de l'index.
-        captured[name] = config['calibration'][name]
+        try:
+            captured[name] = measure_calibration_point(config)
+        except (RuntimeError, ValueError, OSError) as exc:
+            label.config(text=str(exc) + '\nPress Space to retry or Escape to cancel.')
+            return
         state['i'] += 1
         show()
 
@@ -2147,6 +2515,9 @@ def _calibrate_gui(config):  # pragma: no cover - nécessite Tk et une caméra
     root.bind('<Escape>', lambda _: root.destroy())
     show()
     root.mainloop()
+    if len(captured) != 4:
+        print('Calibration cancelled; configuration unchanged.')
+        return 1
     print('Calibration saved.')
     return 0
 
