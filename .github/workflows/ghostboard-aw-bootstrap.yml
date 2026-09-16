@@ -1,0 +1,43 @@
+name: Ghostboard gh-aw bootstrap
+
+on:
+  push:
+    branches:
+      - autopilot/autonomous-factory-v1
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GH_AW_SAFE_MODE: "1"
+
+jobs:
+  compile:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: autopilot/autonomous-factory-v1
+          fetch-depth: 0
+      - name: Install gh-aw
+        uses: github/gh-aw/actions/setup-cli@main
+      - name: Compile and validate Ghostboard agentic workflow
+        run: |
+          set -euo pipefail
+          gh aw compile ghostboard-autopilot
+          gh aw compile --validate
+      - name: Commit generated lock workflow
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/ghostboard-autopilot.lock.yml
+          if git diff --cached --quiet; then
+            echo "Lock workflow already up to date."
+            exit 0
+          fi
+          git commit -m "chore: compile Ghostboard agentic workflow"
+          git push origin HEAD:autopilot/autonomous-factory-v1
