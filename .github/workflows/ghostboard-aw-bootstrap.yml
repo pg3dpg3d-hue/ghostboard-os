@@ -7,14 +7,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   GH_AW_SAFE_MODE: "1"
 
 jobs:
   compile:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -29,15 +28,10 @@ jobs:
           set -euo pipefail
           gh aw compile ghostboard-autopilot
           gh aw compile --validate
-      - name: Commit generated lock workflow
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/ghostboard-autopilot.lock.yml
-          if git diff --cached --quiet; then
-            echo "Lock workflow already up to date."
-            exit 0
-          fi
-          git commit -m "chore: compile Ghostboard agentic workflow"
-          git push origin HEAD:autopilot/autonomous-factory-v1
+      - name: Upload generated lock workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostboard-autopilot-lock
+          path: .github/workflows/ghostboard-autopilot.lock.yml
+          if-no-files-found: error
+          retention-days: 1
