@@ -1,0 +1,105 @@
+name: Ghostboard Autopilot Cycle Reporter
+
+on:
+  workflow_run:
+    workflows:
+      - "Ghostboard Autonomous Factory"
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Ignore cooldown-only runs
+        id: active
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jobs="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100")"
+
+          active_agent_count="$(jq '
+            [
+              .jobs[]
+              | select(
+                  (.name == "agent" or (.name | startswith("agent")))
+                  and .conclusion != "skipped"
+                )
+            ]
+            | length
+          ' <<<"$jobs")"
+
+          if [[ "$active_agent_count" -eq 0 ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "This was a cooldown/pre-activation-only run."
+            exit 0
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch latest persistent Ghostboard report
+        id: memory
+        if: steps.active.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          report_path="ghostboard/last-report.md"
+
+          if gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/$REPO/contents/$report_path?ref=memory/ghostboard-autopilot" \
+            > /tmp/last-report.md 2>/dev/null; then
+            echo "memory_report=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "memory_report=false" >> "$GITHUB_OUTPUT"
+            : > /tmp/last-report.md
+          fi
+
+      - name: Publish end-of-cycle report
+        if: steps.active.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          MEMORY_REPORT: ${{ steps.memory.outputs.memory_report }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "Ghostboard Autonomous Cycle Report"
+            echo
+            echo "Workflow run: $RUN_URL"
+            echo "Workflow conclusion: $RUN_CONCLUSION"
+            echo
+            if [[ "$MEMORY_REPORT" == "true" && -s /tmp/last-report.md ]]; then
+              cat /tmp/last-report.md
+            else
+              echo "No new persistent agent report was available for this run."
+              echo
+              echo "The workflow logs must be inspected before claiming any code, test, PR, or CI result."
+            fi
+          } > /tmp/cycle-report.md
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "[AUTOPILOT REPORT] Cycle $RUN_ID" \
+            --body-file /tmp/cycle-report.md
