@@ -1,0 +1,329 @@
+name: Ghostboard Autopilot Merge Gate
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: ghostboard-autopilot-merge-gate
+  cancel-in-progress: false
+
+jobs:
+  merge-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+
+    steps:
+      - name: Select exactly one eligible AUTOPILOT PR
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          prs="$(gh pr list \
+            --repo "$REPO" \
+            --state open \
+            --limit 100 \
+            --json number,title,headRefName,baseRefName,isDraft,body,url)"
+
+          eligible="$(jq -c '
+            [
+              .[]
+              | select(.title | startswith("[AUTOPILOT] "))
+              | select(.headRefName | startswith("autopilot/"))
+              | select(.baseRefName == "main")
+              | select(.isDraft == false)
+              | select((.body // "") | contains("AUTOPILOT_STATUS: SOFTWARE_CLEAN"))
+              | select((.body // "") | contains("AUTOPILOT_AUTOMERGE: YES"))
+              | select((.body // "") | contains("BLOCKING_FINDINGS: 0"))
+              | select((((.body // "") | contains("PHYSICAL_PI5_VALIDATION: MANDATORY"))) | not)
+            ]
+          ' <<<"$prs")"
+
+          count="$(jq 'length' <<<"$eligible")"
+
+          if [[ "$count" -eq 0 ]]; then
+            echo "No eligible AUTOPILOT PR."
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$count" -gt 1 ]]; then
+            cat > /tmp/multiple.md <<EOF2
+          Ghostboard Autopilot merge gate
+
+          Safety stop: found $count simultaneously eligible AUTOPILOT PRs.
+
+          The factory permits only one active iteration, so no PR was merged.
+          EOF2
+
+            gh issue create \
+              --repo "$REPO" \
+              --title "[AUTOPILOT BLOCKED] Multiple merge candidates" \
+              --body-file /tmp/multiple.md
+
+            echo "::error::Multiple eligible AUTOPILOT PRs; refusing to choose."
+            exit 1
+          fi
+
+          pr_number="$(jq -r '.[0].number' <<<"$eligible")"
+          head_ref="$(jq -r '.[0].headRefName' <<<"$eligible")"
+          pr_url="$(jq -r '.[0].url' <<<"$eligible")"
+          pr_state="$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid,baseRefOid)"
+          expected_sha="$(jq -r '.headRefOid' <<<"$pr_state")"
+          expected_base_sha="$(jq -r '.baseRefOid' <<<"$pr_state")"
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "expected_base_sha=$expected_base_sha" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch canonical Ghostboard CI on PR head
+        id: pre_ci
+        if: steps.candidate.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ steps.candidate.outputs.head_ref }}
+          EXPECTED_SHA: ${{ steps.candidate.outputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh workflow run pi5-validation.yml --repo "$REPO" --ref "$HEAD_REF"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(
+              gh run list \
+                --repo "$REPO" \
+                --workflow pi5-validation.yml \
+                --branch "$HEAD_REF" \
+                --event workflow_dispatch \
+                --limit 30 \
+                --json databaseId,headSha,createdAt \
+              | jq -r --arg sha "$EXPECTED_SHA" '
+                  [.[] | select(.headSha == $sha)]
+                  | sort_by(.createdAt)
+                  | last
+                  | .databaseId // empty
+                '
+            )"
+            [[ -n "$run_id" ]] && break
+            sleep 5
+          done
+
+          if [[ -z "$run_id" ]]; then
+            echo "::error::Could not locate the dispatched pre-merge validation run."
+            exit 1
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$run_id" --repo "$REPO" --exit-status
+
+      - name: Revalidate PR head and gates
+        if: steps.candidate.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.candidate.outputs.pr_number }}
+          EXPECTED_SHA: ${{ steps.candidate.outputs.expected_sha }}
+          EXPECTED_BASE_SHA: ${{ steps.candidate.outputs.expected_base_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current="$(gh pr view "$PR" --repo "$REPO" \
+            --json headRefOid,baseRefOid,isDraft,state,body,baseRefName,headRefName)"
+
+          current_sha="$(jq -r '.headRefOid' <<<"$current")"
+          current_base_sha="$(jq -r '.baseRefOid' <<<"$current")"
+
+          if [[ "$current_sha" != "$EXPECTED_SHA" ]]; then
+            echo "::error::PR head changed while validation was running."
+            exit 1
+          fi
+
+          if [[ "$current_base_sha" != "$EXPECTED_BASE_SHA" ]]; then
+            echo "::error::main advanced while validation was running; refusing stale merge."
+            exit 1
+          fi
+
+          jq -e '
+            .state == "OPEN"
+            and .isDraft == false
+            and .baseRefName == "main"
+            and (.headRefName | startswith("autopilot/"))
+            and ((.body // "") | contains("AUTOPILOT_STATUS: SOFTWARE_CLEAN"))
+            and ((.body // "") | contains("AUTOPILOT_AUTOMERGE: YES"))
+            and ((.body // "") | contains("BLOCKING_FINDINGS: 0"))
+            and ((((.body // "") | contains("PHYSICAL_PI5_VALIDATION: MANDATORY"))) | not)
+          ' <<<"$current" >/dev/null
+
+      - name: Squash merge validated PR
+        id: merge
+        if: steps.candidate.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.candidate.outputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh pr merge "$PR" \
+            --repo "$REPO" \
+            --squash \
+            --delete-branch
+
+          merge_sha=""
+          for _ in $(seq 1 12); do
+            merge_sha="$(gh pr view "$PR" \
+              --repo "$REPO" \
+              --json mergeCommit \
+              -q '.mergeCommit.oid // empty')"
+            [[ -n "$merge_sha" ]] && break
+            sleep 5
+          done
+
+          if [[ -z "$merge_sha" ]]; then
+            echo "::error::Merge completed but merge commit SHA was not observable."
+            exit 1
+          fi
+
+          echo "merge_sha=$merge_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch canonical CI on merged main
+        id: post_ci
+        if: steps.merge.outputs.merge_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_SHA: ${{ steps.merge.outputs.merge_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh workflow run pi5-validation.yml --repo "$REPO" --ref main
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(
+              gh run list \
+                --repo "$REPO" \
+                --workflow pi5-validation.yml \
+                --branch main \
+                --event workflow_dispatch \
+                --limit 30 \
+                --json databaseId,headSha,createdAt \
+              | jq -r --arg sha "$MERGE_SHA" '
+                  [.[] | select(.headSha == $sha)]
+                  | sort_by(.createdAt)
+                  | last
+                  | .databaseId // empty
+                '
+            )"
+            [[ -n "$run_id" ]] && break
+            sleep 5
+          done
+
+          if [[ -z "$run_id" ]]; then
+            echo "::error::Could not locate the post-merge validation run."
+            exit 1
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$run_id" --repo "$REPO" --exit-status
+
+      - name: Publish successful merge report
+        if: steps.post_ci.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.candidate.outputs.pr_number }}
+          PR_URL: ${{ steps.candidate.outputs.pr_url }}
+          MERGE_SHA: ${{ steps.merge.outputs.merge_sha }}
+          PRE_RUN: ${{ steps.pre_ci.outputs.run_id }}
+          POST_RUN: ${{ steps.post_ci.outputs.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pre_url="$(gh run view "$PRE_RUN" --repo "$REPO" --json url -q .url)"
+          post_url="$(gh run view "$POST_RUN" --repo "$REPO" --json url -q .url)"
+
+          cat > /tmp/report.md <<EOF2
+          Ghostboard Autonomous Merge Report
+
+          PR: #$PR
+          PR URL: $PR_URL
+          Merge strategy: squash
+          Main SHA: $MERGE_SHA
+
+          Pre-merge canonical CI: PASS
+          $pre_url
+
+          Post-merge canonical CI: PASS
+          $post_url
+
+          No branch protection was bypassed.
+          A PR declaring mandatory physical Pi 5 validation is never eligible for this autonomous merge gate.
+          EOF2
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "[AUTOPILOT REPORT] Merged PR #$PR" \
+            --body-file /tmp/report.md
+
+      - name: Publish validation blocker report
+        if: failure() && steps.candidate.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.candidate.outputs.pr_number }}
+          PR_URL: ${{ steps.candidate.outputs.pr_url }}
+          PRE_RUN: ${{ steps.pre_ci.outputs.run_id }}
+          POST_RUN: ${{ steps.post_ci.outputs.run_id }}
+        shell: bash
+        run: |
+          set -u
+
+          {
+            echo "Ghostboard Autonomous Merge Gate — BLOCKED"
+            echo
+            echo "PR: #$PR"
+            echo "PR URL: $PR_URL"
+            echo
+            echo "The deterministic merge gate failed or a gate changed while validation was running."
+            echo "No protection was bypassed."
+            if [[ -n "${PRE_RUN:-}" ]]; then
+              gh run view "$PRE_RUN" \
+                --repo "$REPO" \
+                --json url \
+                -q '"Pre-merge CI: " + .url' || true
+            fi
+            if [[ -n "${POST_RUN:-}" ]]; then
+              gh run view "$POST_RUN" \
+                --repo "$REPO" \
+                --json url \
+                -q '"Post-merge CI: " + .url' || true
+            fi
+            echo
+            echo "The next autonomous cycle must inspect the failing run before attempting repair."
+          } > /tmp/blocker.md
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "[AUTOPILOT BLOCKED] PR #$PR requires repair" \
+            --body-file /tmp/blocker.md || true
