@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          report_path="memory/ghostboard-autopilot/ghostboard/last-report.md"
+          report_path="ghostboard/last-report.md"
 
           if gh api \
             -H "Accept: application/vnd.github.raw+json" \
