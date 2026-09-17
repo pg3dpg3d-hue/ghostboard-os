@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import tomllib
 import ghostboard as gb
+import system_health
 try:
     import hand_tracking as hand
 except Exception:  # le centre de contrôle reste utilisable sans le module
@@ -154,14 +155,14 @@ class Center(tk.Tk):
     def refresh(self):
         self.refresh_hand()
         if self.future is None:
-            self.future = self.pool.submit(gb.status)
+            self.future = self.pool.submit(system_health.snapshot)
         if self.future.done():
             try:
-                s = self.future.result()
-                ram = f"{s['memory_available']/1024**3:.1f} / {s['memory_total']/1024**3:.1f} GiB available" if s['memory_total'] else 'unavailable'
-                temp = ', '.join(f"{t['celsius']:.1f} °C" for t in s['temperatures']) or 'unavailable'
-                battery = ', '.join(f"{b['percent']}% ({b['state']})" for b in s['batteries']) or 'No battery telemetry exposed by the hardware'
-                self.health.set(f"{s['board']} · {s['architecture']}\nMemory: {ram}    Disk free: {s['disk_free']/1024**3:.1f} GiB\nTemperature: {temp}\nBattery: {battery}\nSession: {s['session']}    Agent: {'STOPPED' if s['agent_stopped'] else 'ready'}\nNetwork: {', '.join(s['network']) or 'unavailable'}")
+                report = self.future.result()
+                degraded = ', '.join(report['degraded']) or 'none'
+                thermal = report['probes']['thermal']
+                temp = f"{thermal['hottest_celsius']:.1f} °C" if thermal.get('available') else 'unavailable'
+                self.health.set(f"System health: {report['overall'].upper()}\nAgent: {'STOPPED' if report['agent_stopped'] else 'ready'}    Temperature: {temp}\nDegraded probes: {degraded}")
             except Exception as exc:
                 self.note.set(str(exc))
             self.future = None

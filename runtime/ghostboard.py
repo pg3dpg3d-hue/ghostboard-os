@@ -260,9 +260,9 @@ def restore(archive, home=HOME):
 def main():
     ap = argparse.ArgumentParser(description='GHOSTBOARD system tools')
     sub = ap.add_subparsers(dest='command', required=True)
-    for name in ('status', 'doctor', 'apps', 'stop', 'resume', 'update', 'lock'):
+    for name in ('status', 'health', 'doctor', 'apps', 'stop', 'resume', 'update', 'lock'):
         p = sub.add_parser(name)
-        if name in ('status', 'doctor'):
+        if name in ('status', 'health', 'doctor'):
             p.add_argument('--json', action='store_true')
     sub.add_parser('open').add_argument('app', choices=APPS)
     sub.add_parser('backup').add_argument('archive')
@@ -274,6 +274,11 @@ def main():
     try:
         if args.command == 'status':
             print(json.dumps(status(), indent=2))
+        elif args.command == 'health':
+            import system_health
+            report = system_health.snapshot()
+            print(json.dumps(report, indent=2) if args.json else system_health.format_text(report))
+            return 0 if report['overall'] in ('ok', 'partial') else 1
         elif args.command == 'doctor':
             checks = doctor()
             if args.json:
