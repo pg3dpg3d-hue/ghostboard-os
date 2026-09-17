@@ -31,6 +31,20 @@ def _command(command, timeout):
     return {'status': 'ok', 'ok': True, 'available': True, 'data': data, 'output': text[:2000]}
 
 
+def _services(timeout):
+    """Report failed user services even though systemctl exits zero when it lists them."""
+    probe = _command(['systemctl', '--user', '--failed', '--no-legend', '--plain'], timeout)
+    if not probe.get('available', True) or not probe.get('ok', False):
+        return probe
+    failed = [line.strip() for line in probe.get('output', '').splitlines() if line.strip()]
+    if not failed:
+        probe['data'] = []
+        return probe
+    probe.update({'status': 'degraded', 'ok': False, 'data': failed,
+                  'reason': f'{len(failed)} failed user service(s)'})
+    return probe
+
+
 def _thermal():
     values = []
     root = Path('/sys/class/thermal')
@@ -57,13 +71,13 @@ def snapshot(timeout=2.0):
     stopped = STOP.exists()
     probes = {'stop': _stop(stopped), 'thermal': _thermal()}
     commands = {
-        'power': ['vcgencmd', 'get_throttled'],
-        'services': ['systemctl', '--user', '--failed', '--no-legend', '--plain'],
-        'doctor': ['ghost-system', 'doctor', '--json'],
-        'hardware': ['ghost-hardware', 'status'],
+        'power': lambda: _command(['vcgencmd', 'get_throttled'], timeout),
+        'services': lambda: _services(timeout),
+        'doctor': lambda: _command(['ghost-system', 'doctor', '--json'], timeout),
+        'hardware': lambda: _command(['ghost-hardware', 'status'], timeout),
     }
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(commands)) as pool:
-        futures = {name: pool.submit(_command, command, timeout) for name, command in commands.items()}
+        futures = {name: pool.submit(probe) for name, probe in commands.items()}
         for name, future in futures.items():
             try:
                 probes[name] = future.result(timeout=timeout + 0.25)
